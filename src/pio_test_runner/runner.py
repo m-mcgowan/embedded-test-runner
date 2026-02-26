@@ -3,6 +3,15 @@
 Extends PlatformIO's TestRunnerBase with crash detection, disconnect
 handling, and framework-agnostic test result parsing via embedded-bridge
 receivers.
+
+Usage: create ``test/test_custom_runner.py`` in your PlatformIO project::
+
+    from pio_test_runner.runner import EmbeddedTestRunner
+
+    class CustomTestRunner(EmbeddedTestRunner):
+        pass
+
+Then set ``test_framework = custom`` in ``platformio.ini``.
 """
 
 import logging
@@ -37,11 +46,13 @@ class EmbeddedTestRunner(TestRunnerBase):
     manage disconnect/reconnect windows, and parse test results from any
     supported framework (doctest, Unity, auto-detect).
 
-    Register in ``platformio.ini``::
+    PIO requires custom runners in ``test/test_custom_runner.py`` with
+    class name ``CustomTestRunner``. Subclass this runner there::
 
-        [env:esp32s3]
-        test_framework = custom
-        custom_test_runner = pio_test_runner.runner
+        from pio_test_runner.runner import EmbeddedTestRunner
+
+        class CustomTestRunner(EmbeddedTestRunner):
+            pass
     """
 
     NAME = "embedded"
@@ -59,6 +70,13 @@ class EmbeddedTestRunner(TestRunnerBase):
             (self.result_receiver, None),
         ])
 
+        # Track whether our runner explicitly finished the suite (crash
+        # or normal completion). PIO's start() calls on_finish() in a
+        # finally block before teardown(), so we can't rely on
+        # is_finished() to distinguish "our runner completed" from
+        # "PIO's timeout killed the serial reader".
+        self._finished_by_runner = False
+
     def on_testing_line_output(self, line):
         """Process a line of test output.
 
@@ -68,7 +86,7 @@ class EmbeddedTestRunner(TestRunnerBase):
         - Results available → forward to PIO test suite
         - Completion detected → finish suite
         """
-        if self.test_suite.is_finished():
+        if self._finished_by_runner:
             return
 
         self.router.feed(line)
@@ -82,6 +100,7 @@ class EmbeddedTestRunner(TestRunnerBase):
                 message=crash.reason,
                 stdout="\n".join(crash.lines),
             ))
+            self._finished_by_runner = True
             self.test_suite.on_finish()
             return
 
@@ -100,6 +119,7 @@ class EmbeddedTestRunner(TestRunnerBase):
 
         # Completion → finish suite
         if self.result_receiver.is_complete:
+            self._finished_by_runner = True
             self.test_suite.on_finish()
             return
 
@@ -110,9 +130,18 @@ class EmbeddedTestRunner(TestRunnerBase):
             print(line, end="")
 
     def teardown(self):
-        """Check for silent hang on teardown."""
+        """Check for silent hang on teardown.
+
+        Only fires if our runner did not explicitly finish the suite.
+        This catches the case where PIO's serial reader timed out
+        (no output for 600s) without our runner seeing a completion
+        or crash — likely a device hang.
+        """
+        if self._finished_by_runner:
+            return
+
         self.crash_detector.check_timeout()
-        if self.crash_detector.triggered and not self.test_suite.is_finished():
+        if self.crash_detector.triggered:
             crash = self.crash_detector.crash
             self.test_suite.add_case(TestCase(
                 name=f"{self.test_suite.env_name}:hang",

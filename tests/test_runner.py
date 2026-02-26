@@ -114,15 +114,34 @@ class TestLifecycle:
         assert len(errored) == 1
         assert "hang" in errored[0].name
 
-    def test_teardown_no_hang_when_already_finished(self):
+    def test_teardown_no_hang_when_runner_finished(self):
         runner = make_runner()
-        runner.test_suite.on_finish()
+        # Simulate normal completion via result receiver
+        runner.on_testing_line_output("[doctest] test cases:  1 |  1 passed | 0 failed |\n")
+        assert runner._finished_by_runner
+
         runner.crash_detector._last_feed_time = 0.0
         runner.crash_detector._silent_timeout = 0.001
 
         runner.teardown()
-        # Should not add another case since suite is already finished
-        assert len(runner.test_suite.cases) == 0
+        # Should not add a hang case since runner already finished normally
+        errored = [c for c in runner.test_suite.cases if c.status == MockTestStatus.ERRORED]
+        assert len(errored) == 0
+
+    def test_teardown_hang_when_pio_timed_out(self):
+        runner = make_runner()
+        # Simulate PIO's serial reader timing out — runner never finished
+        runner.crash_detector._last_feed_time = 0.0
+        runner.crash_detector._silent_timeout = 0.001
+        # PIO calls on_finish() before teardown, but our flag is False
+        runner.test_suite.on_finish()
+        assert not runner._finished_by_runner
+
+        runner.teardown()
+        # Should detect the hang since runner didn't explicitly finish
+        errored = [c for c in runner.test_suite.cases if c.status == MockTestStatus.ERRORED]
+        assert len(errored) == 1
+        assert "hang" in errored[0].name
 
 
 class TestIntegration:
