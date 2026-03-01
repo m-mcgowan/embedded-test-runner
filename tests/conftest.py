@@ -102,17 +102,29 @@ def install_pio_mocks():
     pio_test_runners_base = MagicMock()
     pio_test_runners_base.TestRunnerBase = MockTestRunnerBase
 
+    # Mock DoctestTestRunner and its parser
+    pio_test_runners_doctest = MagicMock()
+    pio_test_runners_doctest.DoctestTestRunner = None
+    pio_test_runners_doctest.DoctestTestCaseParser = MagicMock()
+
+    # Mock SerialPortFinder
+    pio_device_finder = MagicMock()
+    pio_device_finder.SerialPortFinder = MagicMock()
+
     sys.modules["platformio"] = MagicMock()
     sys.modules["platformio.test"] = MagicMock()
     sys.modules["platformio.test.result"] = pio_test_result
     sys.modules["platformio.test.runners"] = MagicMock()
     sys.modules["platformio.test.runners.base"] = pio_test_runners_base
+    sys.modules["platformio.test.runners.doctest"] = pio_test_runners_doctest
     sys.modules["platformio.test.runners.readers"] = MagicMock()
     sys.modules["platformio.test.runners.readers.serial"] = MagicMock()
     sys.modules["platformio.test.runners.readers.native"] = MagicMock()
     sys.modules["platformio.exception"] = MagicMock()
     sys.modules["platformio.platform"] = MagicMock()
     sys.modules["platformio.platform.factory"] = MagicMock()
+    sys.modules["platformio.device"] = MagicMock()
+    sys.modules["platformio.device.finder"] = pio_device_finder
 
 
 # Install mocks before any test imports runner.py
