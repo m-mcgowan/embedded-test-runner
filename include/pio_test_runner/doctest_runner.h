@@ -359,6 +359,10 @@ inline void run_tests() {
     constexpr uint32_t TIMEOUT_MS = 5000;
 #endif
 
+    // Drain any stale bytes from serial RX buffer. On macOS, opening the
+    // serial port asserts DTR which can inject garbage into USB-CDC RX.
+    while (Serial.available()) { Serial.read(); }
+
     String command = wait_for_command(TIMEOUT_MS);
     run_cycle(command);
     tests_complete = true;
@@ -373,6 +377,9 @@ inline void run_tests() {
  */
 inline void idle_loop() {
     if (!tests_complete) return;
+
+    // Drain stale serial bytes (see run_tests() comment for rationale)
+    while (Serial.available()) { Serial.read(); }
 
     // Accept follow-up commands
     String command = wait_for_command(5000);
