@@ -3,10 +3,16 @@
     "version": "0.1.0",
     "description": "Test runner protocol for PlatformIO embedded tests",
     "keywords": "testing, embedded, serial, crash-detection",
-    "frameworks": ["arduino"],
-    "platforms": ["espressif32"],
+    "frameworks": [
+        "arduino"
+    ],
+    "platforms": [
+        "espressif32"
+    ],
     "build": {
-        "srcFilter": ["-<*>"],
+        "srcFilter": [
+            "-<*>"
+        ],
         "includeDir": "include"
     }
 }

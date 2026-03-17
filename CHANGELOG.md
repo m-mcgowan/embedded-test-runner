@@ -5,6 +5,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-03-17
+
 First release. PlatformIO test runner with crash detection, deep sleep
 orchestration, and auto-install from GitHub.
 
