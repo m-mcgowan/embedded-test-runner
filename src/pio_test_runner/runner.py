@@ -515,15 +515,33 @@ class EmbeddedTestRunner(_BaseRunner):
 
         The device calls esp_restart() which triggers a software reset.
         On ESP32-S3 USB-CDC, the port disappears and reappears very quickly
-        (much faster than deep sleep wake). We use a short wait to let the
-        reset complete rather than port monitoring, which often misses the
-        brief port cycle.
+        (much faster than deep sleep wake). We wait for the device's
+        acknowledgment before closing serial, then let the reset complete.
         """
         if not self._ser or not self._ser.is_open:
             self._open_serial(reset=False)
 
         _echo("[runner] Sending RESTART")
         self._send_command("RESTART")
+
+        # Wait for device to acknowledge RESTART before closing serial.
+        # On macOS USB-CDC, closing the fd immediately after flush() can
+        # abort the in-flight USB transfer before the device processes it.
+        ack_deadline = time.time() + 5
+        buf = ""
+        while time.time() < ack_deadline:
+            try:
+                data = self._ser.read(self._ser.in_waiting or 1)
+            except Exception:
+                break  # Port disappeared — device is resetting
+            if data:
+                buf += data.decode("utf-8", errors="replace")
+                if "Restarting" in buf:
+                    _echo("[runner] Device acknowledged RESTART")
+                    break
+        else:
+            _secho("[runner] WARNING: No RESTART ack within 5s", fg="yellow", err=True)
+
         self._close_serial()
 
         # Brief wait for esp_restart() to complete. Software reset on
