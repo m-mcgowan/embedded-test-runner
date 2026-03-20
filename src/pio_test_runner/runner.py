@@ -436,6 +436,9 @@ class EmbeddedTestRunner(_BaseRunner):
                 self._ser.write(b"SLEEP\n")
                 self._ser.flush()
                 _echo("[runner] SLEEP sent")
+                # Give firmware time to read the command before closing serial.
+                # Closing USB-CDC can trigger an ESP32-S3 reset.
+                time.sleep(1)
             except Exception:
                 pass  # best-effort — device may have disconnected
 
