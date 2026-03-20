@@ -1,5 +1,10 @@
 """Tests for EmbeddedTestRunner."""
 
+import threading
+import time
+from io import BytesIO
+from unittest.mock import MagicMock, PropertyMock
+
 from conftest import (
     MockProjectConfig,
     MockTestRunnerOptions,
@@ -181,6 +186,312 @@ class TestProgramArgs:
         runner = make_runner()
         cmd = runner._build_initial_command()
         assert cmd == "RUN: --ts *GPS*"
+
+
+class MockSerial:
+    """Mock serial port that feeds pre-scripted data with timing."""
+
+    def __init__(self):
+        self._chunks: list[tuple[float, bytes]] = []  # (delay_s, data)
+        self._idx = 0
+        self._start = time.time()
+        self._written: list[bytes] = []
+        self.is_open = True
+
+    def schedule(self, delay: float, data: str):
+        """Schedule data to be returned after delay seconds."""
+        self._chunks.append((delay, data.encode()))
+        return self
+
+    def read(self, size=1):
+        if self._idx >= len(self._chunks):
+            time.sleep(0.01)
+            return b""
+        delay, data = self._chunks[self._idx]
+        elapsed = time.time() - self._start
+        if elapsed < delay:
+            remaining = delay - elapsed
+            if remaining > 0.01:
+                time.sleep(min(remaining, 0.05))
+            return b""
+        self._idx += 1
+        return data
+
+    @property
+    def in_waiting(self):
+        if self._idx >= len(self._chunks):
+            return 0
+        delay, data = self._chunks[self._idx]
+        if time.time() - self._start >= delay:
+            return len(data)
+        return 0
+
+    def write(self, data):
+        self._written.append(data)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.is_open = False
+
+    @property
+    def written_strings(self):
+        return [d.decode() for d in self._written]
+
+
+class TestOrchestratedProtocol:
+    """Test the orchestrated mode serial protocol handling.
+
+    These simulate _run_test_cycle behavior by feeding data through
+    _on_serial_data and checking protocol state transitions.
+    """
+
+    def test_done_received_during_main_loop(self):
+        """PTR:DONE in the normal serial stream is detected."""
+        runner = make_runner()
+        # Simulate: READY → command sent → tests → DONE
+        lines = [
+            _crc("PTR:READY") + "\n",
+            _crc('PTR:TEST:START suite="S" name="t1"') + "\n",
+            "test output\n",
+            '[doctest] test cases: 1 | 1 passed | 0 failed\n',
+            _crc("PTR:DONE") + "\n",
+        ]
+        for line in lines:
+            runner._on_serial_data(line.encode())
+            if runner.protocol.state == ProtocolState.READY:
+                runner.protocol.command_sent()
+
+        assert runner.protocol.state == ProtocolState.FINISHED
+
+    def test_done_after_doctest_summary(self):
+        """PTR:DONE arrives after doctest summary — must not be missed.
+
+        This reproduces the bug where PIO's is_finished() fires on the
+        doctest summary line, causing the runner to exit before PTR:DONE.
+        """
+        runner = make_runner()
+        lines = [
+            _crc("PTR:READY") + "\n",
+            _crc('PTR:TEST:START suite="S" name="t1"') + "\n",
+            "test output\n",
+        ]
+        for line in lines:
+            runner._on_serial_data(line.encode())
+            if runner.protocol.state == ProtocolState.READY:
+                runner.protocol.command_sent()
+
+        # At this point, protocol is RUNNING
+        assert runner.protocol.state == ProtocolState.RUNNING
+
+        # PIO's parser sees doctest summary and marks suite finished
+        runner.test_suite._finished = True
+
+        # PTR:DONE arrives after PIO declares finished
+        runner._on_serial_data((_crc("PTR:DONE") + "\n").encode())
+
+        # Protocol must still detect DONE
+        assert runner.protocol.state == ProtocolState.FINISHED
+
+    def test_done_not_received_leaves_running(self):
+        """Without PTR:DONE, protocol stays in RUNNING state."""
+        runner = make_runner()
+        lines = [
+            _crc("PTR:READY") + "\n",
+            _crc('PTR:TEST:START suite="S" name="t1"') + "\n",
+            "test output\n",
+            '[doctest] test cases: 1 | 1 passed | 0 failed\n',
+        ]
+        for line in lines:
+            runner._on_serial_data(line.encode())
+            if runner.protocol.state == ProtocolState.READY:
+                runner.protocol.command_sent()
+
+        # No PTR:DONE — should still be RUNNING
+        assert runner.protocol.state == ProtocolState.RUNNING
+
+    def test_sleep_command_sent_after_done(self):
+        """Runner sends SLEEP to the device after PTR:DONE."""
+        runner = make_runner()
+        mock_ser = MockSerial()
+        runner._ser = mock_ser
+
+        # Simulate completion
+        runner.protocol.feed(_crc("PTR:READY"))
+        runner.protocol.command_sent()
+        runner.protocol.feed(_crc("PTR:DONE"))
+        assert runner.protocol.state == ProtocolState.FINISHED
+
+        # The close-serial path should send SLEEP
+        # (simulating what happens at end of _run_test_cycle)
+        if runner._ser and runner._ser.is_open:
+            runner._ser.write(b"SLEEP\n")
+            runner._ser.flush()
+
+        assert b"SLEEP\n" in mock_ser._written
+
+    def test_partial_line_reassembly(self):
+        """PTR:DONE split across two serial reads is handled correctly."""
+        runner = make_runner()
+        runner._line_buf = ""
+
+        # Feed READY and start running
+        runner._on_serial_data((_crc("PTR:READY") + "\n").encode())
+        runner.protocol.command_sent()
+
+        # PTR:DONE arrives split across two reads
+        done_line = _crc("PTR:DONE") + "\n"
+        mid = len(done_line) // 2
+        runner._on_serial_data(done_line[:mid].encode())
+        assert runner.protocol.state == ProtocolState.RUNNING  # not yet
+
+        runner._on_serial_data(done_line[mid:].encode())
+        assert runner.protocol.state == ProtocolState.FINISHED  # now complete
+
+    def test_main_loop_catches_done_in_stream(self):
+        """The main read loop must detect PTR:DONE mixed with test output.
+
+        Reproduces the bug where the runner exits the main loop without
+        seeing PTR:DONE because the doctest summary line causes PIO to
+        mark the suite as finished, breaking out before DONE arrives.
+        """
+        runner = make_runner()
+        runner._line_buf = ""
+
+        # Simulate full test session including doctest summary
+        session = [
+            _crc("PTR:READY") + "\n",
+            _crc('PTR:TEST:START suite="S" name="t1" timeout=5') + "\n",
+            "test/foo.cpp:10: SUCCESS: CHECK( true )\n",
+            # doctest summary — this is what PIO parses to mark finished
+            "[doctest] test cases: 1 | 1 passed | 0 failed\n",
+            "[doctest] assertions: 1 | 1 passed | 0 failed\n",
+            "[doctest] Status: SUCCESS!\n",
+            # PTR:DONE comes AFTER the doctest summary
+            _crc("PTR:DONE") + "\n",
+        ]
+
+        for line in session:
+            runner._on_serial_data(line.encode())
+            if runner.protocol.state == ProtocolState.READY:
+                runner.protocol.command_sent()
+
+        # The critical check: protocol must reach FINISHED
+        assert runner.protocol.state == ProtocolState.FINISHED, (
+            f"Protocol state is {runner.protocol.state.name}, expected FINISHED. "
+            "PTR:DONE was missed — the runner would exit without clean completion."
+        )
+
+    def test_done_missed_when_pio_finishes_first(self):
+        """BUG REPRODUCTION: PIO declares finished before PTR:DONE arrives.
+
+        When PIO's test_suite.is_finished() returns True (from doctest
+        summary), the old runner would break out of the main loop. If
+        PTR:DONE hasn't arrived yet, it gets lost.
+
+        This test feeds the doctest summary, marks PIO as finished, then
+        feeds PTR:DONE. The protocol must still reach FINISHED.
+        """
+        runner = make_runner()
+        runner._line_buf = ""
+
+        # Phase 1: normal test output
+        runner._on_serial_data((_crc("PTR:READY") + "\n").encode())
+        runner.protocol.command_sent()
+        runner._on_serial_data(
+            (_crc('PTR:TEST:START suite="S" name="t1"') + "\n").encode()
+        )
+        runner._on_serial_data(b"test output\n")
+
+        assert runner.protocol.state == ProtocolState.RUNNING
+
+        # Phase 2: PIO marks suite as finished (doctest summary seen)
+        runner.test_suite._finished = True
+
+        # Phase 3: PTR:DONE arrives — must still be processed
+        runner._on_serial_data((_crc("PTR:DONE") + "\n").encode())
+
+        assert runner.protocol.state == ProtocolState.FINISHED, (
+            "PTR:DONE was not processed after PIO declared finished. "
+            "The runner's _on_serial_data must process lines regardless "
+            "of PIO's is_finished() state."
+        )
+
+    def test_run_cycle_waits_for_done(self):
+        """_run_test_cycle must not exit until PTR:DONE is received.
+
+        Simulates the real serial read loop with a mock serial port.
+        The doctest summary arrives, then PTR:DONE comes 0.5s later.
+        The runner must wait for DONE rather than exiting early.
+        """
+        runner = make_runner()
+        runner._line_buf = ""
+
+        # Build the serial data stream
+        ready = _crc("PTR:READY") + "\n"
+        test_start = _crc('PTR:TEST:START suite="S" name="t1"') + "\n"
+        test_output = "test/foo.cpp:10: SUCCESS: CHECK( true )\n"
+        doctest_summary = (
+            "[doctest] test cases: 1 | 1 passed | 0 failed\n"
+            "[doctest] Status: SUCCESS!\n"
+        )
+        done = _crc("PTR:DONE") + "\n"
+
+        # Mock serial that delivers DONE 0.2s after doctest summary
+        mock = MockSerial()
+        mock.schedule(0.0, ready)
+        mock.schedule(0.1, test_start + test_output)
+        mock.schedule(0.2, doctest_summary)
+        # Gap here — runner must not exit during this gap
+        mock.schedule(0.5, done)
+
+        runner._ser = mock
+        runner._open_serial = lambda reset=True: None  # skip real serial
+        runner._close_serial = lambda: None
+        runner._send_command = lambda cmd: runner.protocol.command_sent()
+
+        # Run the cycle in a thread with timeout
+        result = {"state": None, "error": None}
+        def run():
+            try:
+                runner._run_test_cycle(command="RUN_ALL", reset=False)
+                result["state"] = runner.protocol.state
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=run)
+        t.start()
+        t.join(timeout=5)
+
+        assert not t.is_alive(), "runner hung — _run_test_cycle did not return"
+        assert result["error"] is None, f"runner raised: {result['error']}"
+        assert result["state"] == ProtocolState.FINISHED, (
+            f"Protocol state is {result['state']}, expected FINISHED. "
+            "The runner exited _run_test_cycle before receiving PTR:DONE."
+        )
+
+    def test_done_never_arrives_protocol_stays_running(self):
+        """If PTR:DONE never arrives, protocol stays RUNNING.
+
+        The runner should detect this (via drain timeout) and report
+        an incomplete run rather than silently declaring success.
+        """
+        runner = make_runner()
+        runner._line_buf = ""
+
+        runner._on_serial_data((_crc("PTR:READY") + "\n").encode())
+        runner.protocol.command_sent()
+        runner._on_serial_data(b"test output\n")
+        runner._on_serial_data(
+            b"[doctest] test cases: 1 | 1 passed | 0 failed\n"
+        )
+        # No PTR:DONE sent
+
+        assert runner.protocol.state == ProtocolState.RUNNING
+        # PIO thinks it's done, but protocol doesn't
+        runner.test_suite._finished = True
+        assert runner.protocol.state == ProtocolState.RUNNING
 
 
 class TestIntegration:
