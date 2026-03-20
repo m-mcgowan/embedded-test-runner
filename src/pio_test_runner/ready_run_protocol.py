@@ -47,6 +47,7 @@ class ReadyRunProtocol:
         self._sleep_duration_ms: int = 0
         self._current_test_suite: str = ""
         self._current_test_name: str = ""
+        self._current_test_timeout: int = 0  # per-test timeout from doctest annotation
         self._sleeping_test_name: str = ""
         self._completed_tests: list[str] = []  # test names seen across all cycles
 
@@ -89,12 +90,15 @@ class ReadyRunProtocol:
             payload = parse_payload(parsed.payload_str)
             suite = payload.get("suite", "")
             name = payload.get("name", "")
+            timeout = payload.get("timeout", "")
             if suite and isinstance(suite, str):
                 self._current_test_suite = suite
             if name and isinstance(name, str):
                 self._current_test_name = name
                 if name not in self._completed_tests:
                     self._completed_tests.append(name)
+            # Per-test timeout from doctest::timeout(N) annotation
+            self._current_test_timeout = int(timeout) if timeout else 0
 
         # Check for sleep sentinel
         elif parsed.tag == "SLEEP":
@@ -156,6 +160,11 @@ class ReadyRunProtocol:
         return self._current_test_name
 
     @property
+    def current_test_timeout(self) -> int:
+        """Per-test timeout in seconds from doctest::timeout(N), or 0 if unset."""
+        return self._current_test_timeout
+
+    @property
     def current_test_full(self) -> str:
         """Full test identifier (suite/name)."""
         if self._current_test_suite and self._current_test_name:
@@ -177,6 +186,7 @@ class ReadyRunProtocol:
         self._sleep_duration_ms = 0
         self._current_test_suite = ""
         self._current_test_name = ""
+        self._current_test_timeout = 0
         self._sleeping_test_name = ""
 
     def reset_all(self) -> None:

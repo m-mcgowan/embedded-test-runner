@@ -164,8 +164,26 @@ class EmbeddedTestRunner(_BaseRunner):
         return 5.0
 
     def configure_hang_timeout(self) -> float:
-        """Seconds without output before declaring a hang (orchestrated mode)."""
+        """Default seconds without output before declaring a hang.
+
+        Override in subclass, or set PTR_HANG_TIMEOUT env var (seconds).
+        Per-test doctest::timeout(N) annotations take precedence when present.
+        """
+        env_val = os.environ.get("PTR_HANG_TIMEOUT", "").strip()
+        if env_val:
+            return float(env_val)
         return 30.0
+
+    def _effective_hang_timeout(self) -> float:
+        """Hang timeout for the current test.
+
+        Uses the per-test timeout from doctest::timeout(N) if set,
+        otherwise falls back to configure_hang_timeout().
+        """
+        per_test = self.protocol.current_test_timeout
+        if per_test > 0:
+            return float(per_test)
+        return self.configure_hang_timeout()
 
     # ------------------------------------------------------------------
     # Line callback mode (PIO owns serial)
@@ -369,7 +387,7 @@ class EmbeddedTestRunner(_BaseRunner):
                 # Check for hang during RUNNING
                 if first_assertion_seen:
                     elapsed = time.time() - last_activity
-                    if elapsed > self.configure_hang_timeout():
+                    if elapsed > self._effective_hang_timeout():
                         _secho(
                             f"\nHANG DETECTED: No output for {int(elapsed)}s — aborting",
                             fg="red", err=True,
