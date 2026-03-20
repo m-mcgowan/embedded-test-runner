@@ -190,25 +190,40 @@ class EmbeddedTestRunner(_BaseRunner):
     # ------------------------------------------------------------------
 
     def _build_initial_command(self):
-        """Build the initial RUN command from environment variables.
+        """Build the initial RUN command from filters.
 
-        The test launch script (e.g. run_tests.sh) sets these env vars:
-          PTR_TEST_CASE=*pattern*       → test-case filter
-          PTR_TEST_SUITE=*pattern*      → test-suite filter
-          PTR_TEST_CASE_EXCLUDE=*pat*   → test-case-exclude
-          PTR_TEST_SUITE_EXCLUDE=*pat*  → test-suite-exclude
+        Filters can come from two sources (both are combined):
+
+        1. Program args (``pio test -a "--ts *pattern*"``):
+           Passed to native tests as argv; for embedded tests we forward
+           them to the device via the RUN: protocol. Supports the same
+           flags as doctest: --tc, --ts, --tce, --tse.
+
+        2. Environment variables:
+           PTR_TEST_CASE=*pattern*       → --tc (test-case filter)
+           PTR_TEST_SUITE=*pattern*      → --ts (test-suite filter)
+           PTR_TEST_CASE_EXCLUDE=*pat*   → --tce (test-case-exclude)
+           PTR_TEST_SUITE_EXCLUDE=*pat*  → --tse (test-suite-exclude)
 
         Returns "RUN_ALL" if no filters specified, otherwise
         "RUN: --tc ... --ts ..." etc.
         """
+        filters = []
+
+        # Source 1: program args from pio test -a "..."
+        program_args = getattr(self.options, "program_args", None)
+        if program_args:
+            # program_args is a list of strings, e.g. ["--ts", "*BHI385*"]
+            # Pass them through directly — the firmware parser handles them.
+            filters.extend(program_args)
+
+        # Source 2: environment variables
         env_map = {
             "PTR_TEST_CASE": "--tc",
             "PTR_TEST_SUITE": "--ts",
             "PTR_TEST_CASE_EXCLUDE": "--tce",
             "PTR_TEST_SUITE_EXCLUDE": "--tse",
         }
-
-        filters = []
         for env_var, flag in env_map.items():
             value = os.environ.get(env_var, "").strip()
             if value:

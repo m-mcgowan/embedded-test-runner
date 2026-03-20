@@ -22,6 +22,41 @@ lib_deps =
 
 Set `PIO_TEST_RUNNER_NO_AUTO_INSTALL=1` to disable auto-installation (e.g. when using editable installs for development).
 
+## Test Filtering
+
+Runtime test filtering for embedded targets uses the same `-a` flags as native doctest tests:
+
+```bash
+# Filter by test suite
+pio test -e my_board -a "--ts *SensorTests*"
+
+# Filter by test case
+pio test -e my_board -a "--tc *timeout*"
+
+# Exclude a suite
+pio test -e my_board -a "--tse *slow*"
+
+# Combine filters
+pio test -e my_board -a "--ts *Network*" -a "--tce *stress*"
+```
+
+Alternatively, set environment variables:
+
+```bash
+PTR_TEST_SUITE="*SensorTests*" pio test -e my_board
+```
+
+### Supported filters
+
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--ts` | `PTR_TEST_SUITE` | Run only suites matching pattern |
+| `--tc` | `PTR_TEST_CASE` | Run only cases matching pattern |
+| `--tse` | `PTR_TEST_SUITE_EXCLUDE` | Exclude suites matching pattern |
+| `--tce` | `PTR_TEST_CASE_EXCLUDE` | Exclude cases matching pattern |
+
+Patterns support `*` wildcards (doctest globbing). Filters from `-a` and environment variables are combined.
+
 ## Status
 
 | Feature | Design | Docs | Impl | Tests | Examples | Since | Updated |
