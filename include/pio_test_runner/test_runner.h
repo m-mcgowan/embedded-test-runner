@@ -1,5 +1,8 @@
 #pragma once
 #include <Arduino.h>
+#if defined(ESP_IDF_VERSION)
+#include <esp_heap_caps.h>
+#endif
 #include "pio_test_runner/protocol.h"
 
 /// @brief PlatformIO test runner protocol — firmware-side API.
@@ -83,11 +86,22 @@ inline void signal_sleep(uint32_t duration_ms) {
 
 /// Print heap stats before a test (parsed by MemoryTracker receiver).
 inline void print_mem_before(size_t free_heap, size_t min_heap) {
+#if defined(ESP_IDF_VERSION)
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    emit(Serial, "PTR:MEM:BEFORE free=%zu min=%zu largest=%zu", free_heap, min_heap, largest);
+#else
     emit(Serial, "PTR:MEM:BEFORE free=%zu min=%zu", free_heap, min_heap);
+#endif
 }
 
 /// Print heap stats after a test (parsed by MemoryTracker receiver).
 inline void print_mem_after(size_t free_heap, int64_t delta, size_t min_heap) {
+#if defined(ESP_IDF_VERSION)
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    emit(Serial, "PTR:MEM:AFTER free=%zu delta=%+lld min=%zu largest=%zu",
+         free_heap, (long long)delta, min_heap, largest);
+    return;
+#endif
     emit(Serial, "PTR:MEM:AFTER free=%zu delta=%+lld min=%zu",
          free_heap, (long long)delta, min_heap);
 }
