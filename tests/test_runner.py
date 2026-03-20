@@ -113,6 +113,76 @@ class TestLifecycle:
         assert isinstance(errored[0].exception, RuntimeError)
 
 
+class TestHangTimeout:
+    def test_default_hang_timeout(self):
+        runner = make_runner()
+        assert runner.configure_hang_timeout() == 30.0
+
+    def test_hang_timeout_from_env(self, monkeypatch):
+        monkeypatch.setenv("PTR_HANG_TIMEOUT", "120")
+        runner = make_runner()
+        assert runner.configure_hang_timeout() == 120.0
+
+    def test_effective_timeout_uses_per_test(self):
+        runner = make_runner()
+        runner.protocol._current_test_timeout = 60
+        assert runner._effective_hang_timeout() == 60.0
+
+    def test_effective_timeout_falls_back_to_global(self):
+        runner = make_runner()
+        runner.protocol._current_test_timeout = 0
+        assert runner._effective_hang_timeout() == 30.0
+
+    def test_effective_timeout_env_override(self, monkeypatch):
+        monkeypatch.setenv("PTR_HANG_TIMEOUT", "90")
+        runner = make_runner()
+        runner.protocol._current_test_timeout = 0
+        assert runner._effective_hang_timeout() == 90.0
+
+    def test_per_test_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("PTR_HANG_TIMEOUT", "90")
+        runner = make_runner()
+        runner.protocol._current_test_timeout = 15
+        assert runner._effective_hang_timeout() == 15.0
+
+
+class TestProgramArgs:
+    def test_no_args_returns_run_all(self):
+        runner = make_runner()
+        assert runner._build_initial_command() == "RUN_ALL"
+
+    def test_program_args_forwarded(self):
+        opts = MockTestRunnerOptions()
+        opts.program_args = ["--ts", "*BHI385*"]
+        runner = make_runner(options=opts)
+        cmd = runner._build_initial_command()
+        assert cmd.startswith("RUN: ")
+        assert "--ts" in cmd
+        assert "*BHI385*" in cmd
+
+    def test_program_args_combined_with_env(self, monkeypatch):
+        monkeypatch.setenv("PTR_TEST_CASE", "*watermark*")
+        opts = MockTestRunnerOptions()
+        opts.program_args = ["--ts", "*BHI385*"]
+        runner = make_runner(options=opts)
+        cmd = runner._build_initial_command()
+        assert "--ts" in cmd
+        assert "--tc" in cmd
+
+    def test_single_combined_arg(self):
+        opts = MockTestRunnerOptions()
+        opts.program_args = ["--ts *Suite*"]
+        runner = make_runner(options=opts)
+        cmd = runner._build_initial_command()
+        assert "--ts *Suite*" in cmd
+
+    def test_env_only(self, monkeypatch):
+        monkeypatch.setenv("PTR_TEST_SUITE", "*GPS*")
+        runner = make_runner()
+        cmd = runner._build_initial_command()
+        assert cmd == "RUN: --ts *GPS*"
+
+
 class TestIntegration:
     def test_receivers_process_full_session(self):
         """All receivers correctly process a complete test session."""

@@ -407,33 +407,35 @@ class EmbeddedTestRunner(_BaseRunner):
 
             # Check if finished
             if self.protocol.state == ProtocolState.FINISHED:
+                _echo("[runner] PTR:DONE received")
                 break
             if self.crash_detector.triggered:
                 break
-            # PIO's doctest parser may declare finished before PTR:DONE.
-            # Keep reading so we receive PTR:DONE and can send SLEEP.
-            if (self.protocol.state == ProtocolState.RUNNING
-                    and self.test_suite.is_finished()):
-                # Give firmware a few seconds to emit PTR:DONE
-                _echo("[runner] PIO reports tests finished, waiting for PTR:DONE...")
-                done_deadline = time.time() + 5
-                while time.time() < done_deadline:
-                    try:
-                        data = self._ser.read(self._ser.in_waiting or 1)
-                    except Exception:
-                        break
-                    if data:
-                        self._on_serial_data(data)
-                    if self.protocol.state == ProtocolState.FINISHED:
-                        break
-                break
+
+        # If we exited the loop without PTR:DONE (e.g. hang, disconnect,
+        # or PIO declared finished via doctest summary), try to drain
+        # remaining output to catch PTR:DONE.
+        if self.protocol.state != ProtocolState.FINISHED and self._ser and self._ser.is_open:
+            _echo("[runner] Waiting for PTR:DONE...")
+            done_deadline = time.time() + 10
+            while time.time() < done_deadline:
+                try:
+                    data = self._ser.read(self._ser.in_waiting or 1)
+                except Exception:
+                    break
+                if data:
+                    self._on_serial_data(data)
+                if self.protocol.state == ProtocolState.FINISHED:
+                    _echo("[runner] PTR:DONE received")
+                    break
 
         # Send SLEEP to put the device into deep sleep (prevents battery
         # drain and unintended test re-runs from USB reset).
-        if self.protocol.state == ProtocolState.FINISHED and self._ser and self._ser.is_open:
+        if self._ser and self._ser.is_open:
             try:
                 self._ser.write(b"SLEEP\n")
                 self._ser.flush()
+                _echo("[runner] SLEEP sent")
             except Exception:
                 pass  # best-effort — device may have disconnected
 
