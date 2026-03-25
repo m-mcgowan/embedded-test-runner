@@ -248,11 +248,24 @@ class EmbeddedTestRunner(_BaseRunner):
             "PTR_TEST_SUITE": "--ts",
             "PTR_TEST_CASE_EXCLUDE": "--tce",
             "PTR_TEST_SUITE_EXCLUDE": "--tse",
+            "PTR_UNSKIP_TEST_CASE": "--unskip-tc",
+            "PTR_UNSKIP_TEST_SUITE": "--unskip-ts",
+            "PTR_SKIP_TEST_CASE": "--skip-tc",
+            "PTR_SKIP_TEST_SUITE": "--skip-ts",
+            "PTR_NO_SKIP": "--no-skip",
         }
         for env_var, flag in env_map.items():
             value = os.environ.get(env_var, "").strip()
             if value:
-                filters.append(f"{flag} {value}")
+                if flag == "--no-skip":
+                    # Boolean flag — just append the flag, no value
+                    filters.append(flag)
+                elif " " in value:
+                    # Quote values containing spaces so the firmware
+                    # tokenizer doesn't split them
+                    filters.append(f'{flag} "{value}"')
+                else:
+                    filters.append(f"{flag} {value}")
 
         if not filters:
             return "RUN_ALL"

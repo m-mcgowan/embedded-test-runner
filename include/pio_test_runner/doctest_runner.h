@@ -226,52 +226,169 @@ inline int apply_resume_after(doctest::Context& ctx, const char* test_name) {
 }
 
 /**
- * @brief Parse filter flags from a RUN: command body.
+ * @brief Simple wildcard match (supports * and ? globs).
  *
- * Supports:
- *   --tc <pattern>   → test-case filter
- *   --ts <pattern>   → test-suite filter
- *   --tce <pattern>  → test-case-exclude
- *   --tse <pattern>  → test-suite-exclude
- *
- * If the body contains no recognized flags, it's treated as a bare
- * test-case filter for backwards compatibility (e.g. "RUN: *foo*").
+ * Reimplements doctest's wildcmp (which is in an anonymous namespace
+ * and not accessible to us).
  */
-inline void apply_run_filters(doctest::Context& ctx, const String& body) {
-    struct { const char* flag; const char* option; } flags[] = {
-        {"--tc ",  "test-case"},
-        {"--ts ",  "test-suite"},
-        {"--tce ", "test-case-exclude"},
-        {"--tse ", "test-suite-exclude"},
-    };
-
-    bool any_flag = false;
-    for (auto& f : flags) {
-        int pos = body.indexOf(f.flag);
-        if (pos < 0) continue;
-        any_flag = true;
-
-        // Extract value: from after the flag to the next -- or end of string
-        int val_start = pos + strlen(f.flag);
-        int val_end = body.length();
-        for (int i = val_start; i < (int)body.length() - 1; ++i) {
-            if (body[i] == '-' && body[i + 1] == '-') {
-                val_end = i;
-                break;
-            }
-        }
-        String value = body.substring(val_start, val_end);
-        value.trim();
-        if (value.length() > 0) {
-            ctx.setOption(f.option, value.c_str());
-            Serial.printf("Runner filter: %s = %s\n", f.option, value.c_str());
+inline bool glob_match(const char* str, const char* pattern) {
+    const char* cp = nullptr;
+    const char* mp = nullptr;
+    while (*str && *pattern != '*') {
+        if (*pattern != *str && *pattern != '?') return false;
+        pattern++;
+        str++;
+    }
+    while (*str) {
+        if (*pattern == '*') {
+            if (!*++pattern) return true;
+            mp = pattern;
+            cp = str + 1;
+        } else if (*pattern == *str || *pattern == '?') {
+            pattern++;
+            str++;
+        } else {
+            pattern = mp;
+            str = cp++;
         }
     }
+    while (*pattern == '*') pattern++;
+    return !*pattern;
+}
 
-    if (!any_flag && body.length() > 0) {
-        // Backwards compatible: bare pattern is a test-case filter
-        ctx.setOption("test-case", body.c_str());
-        Serial.printf("Runner filter applied: %s\n", body.c_str());
+/**
+ * @brief Modify m_skip on registered tests matching a pattern.
+ *
+ * Walks the doctest test registry and sets or clears m_skip on tests
+ * whose name or suite matches the given glob pattern. This operates
+ * on the test objects themselves, before doctest's filter chain runs.
+ *
+ * @param pattern  Glob pattern (supports * and ? wildcards).
+ * @param match_suite  If true, match against test suite name; if false, test case name.
+ * @param skip_value   Value to set m_skip to (false = unskip, true = force-skip).
+ * @return Number of tests modified.
+ */
+inline int modify_skip(const char* pattern, bool match_suite, bool skip_value) {
+    int count = 0;
+    for (auto& tc : doctest::detail::getRegisteredTests()) {
+        const char* name = match_suite ? tc.m_test_suite : tc.m_name;
+        if (name && glob_match(name, pattern)) {
+            // m_skip is not part of set ordering — safe to modify via const_cast
+            const_cast<doctest::detail::TestCase&>(tc).m_skip = skip_value;
+            count++;
+        }
+    }
+    return count;
+}
+
+/**
+ * @brief Extract and apply PTR-specific flags from args, return remaining args.
+ *
+ * PTR-specific flags modify the test registry (m_skip) and are removed
+ * from the argument list before passing to doctest's applyCommandLine.
+ *
+ * Supported flags:
+ *   --unskip-tc <pattern>  Clear m_skip on matching test cases
+ *   --unskip-ts <pattern>  Clear m_skip on matching test suites
+ *   --skip-tc <pattern>    Set m_skip on matching test cases
+ *   --skip-ts <pattern>    Set m_skip on matching test suites
+ *
+ * @param args  Argument list (modified in place — PTR flags removed).
+ */
+inline void extract_ptr_flags(std::vector<String>& args) {
+    struct { const char* flag; bool match_suite; bool skip_value; } ptr_flags[] = {
+        {"--unskip-tc", false, false},
+        {"--unskip-ts", true,  false},
+        {"--skip-tc",   false, true},
+        {"--skip-ts",   true,  true},
+    };
+
+    // Process in multiple passes so all flags are found regardless of position
+    for (auto& pf : ptr_flags) {
+        for (size_t i = 0; i < args.size(); ) {
+            if (args[i] == pf.flag && i + 1 < args.size()) {
+                const char* pattern = args[i + 1].c_str();
+                int count = modify_skip(pattern, pf.match_suite, pf.skip_value);
+                Serial.printf("Runner %s %s: %d test%s modified\n",
+                              pf.flag, pattern, count, count == 1 ? "" : "s");
+                args.erase(args.begin() + i, args.begin() + i + 2);
+            } else {
+                i++;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Tokenize a command string into argv-style arguments.
+ *
+ * Splits on whitespace. Handles quoted strings (single or double quotes)
+ * so patterns like --tc "foo bar" work correctly.
+ */
+inline std::vector<String> tokenize_args(const String& body) {
+    std::vector<String> args;
+    size_t i = 0;
+    while (i < body.length()) {
+        // Skip whitespace
+        while (i < body.length() && body[i] == ' ') i++;
+        if (i >= body.length()) break;
+
+        String arg;
+        if (body[i] == '"' || body[i] == '\'') {
+            // Quoted argument
+            char quote = body[i++];
+            while (i < body.length() && body[i] != quote) {
+                arg += body[i++];
+            }
+            if (i < body.length()) i++;  // skip closing quote
+        } else {
+            // Unquoted argument
+            while (i < body.length() && body[i] != ' ') {
+                arg += body[i++];
+            }
+        }
+        if (arg.length() > 0) {
+            args.push_back(arg);
+        }
+    }
+    return args;
+}
+
+/**
+ * @brief Parse and apply filter flags from a RUN: command body.
+ *
+ * Two-phase processing:
+ * 1. Extract PTR-specific flags (--unskip-tc, --skip-tc, etc.) and
+ *    apply them to the test registry (modify m_skip).
+ * 2. Pass remaining flags to doctest's applyCommandLine(), which
+ *    handles all native flags: --tc, --ts, --tce, --tse, --no-skip,
+ *    comma-separated patterns, multiple instances, etc.
+ *
+ * If no flags are present, the body is treated as a bare test-case
+ * pattern for backwards compatibility (e.g. "RUN: *foo*").
+ */
+inline void apply_run_filters(doctest::Context& ctx, const String& body) {
+    auto args = tokenize_args(body);
+
+    // Check for bare pattern (no -- flags) for backwards compatibility
+    if (args.size() == 1 && !args[0].startsWith("--")) {
+        ctx.setOption("test-case", args[0].c_str());
+        Serial.printf("Runner filter applied: %s\n", args[0].c_str());
+        return;
+    }
+
+    // Phase 1: extract and apply PTR-specific flags (modifies registry)
+    extract_ptr_flags(args);
+
+    // Phase 2: build argc/argv and pass to doctest's native parser
+    if (!args.empty()) {
+        // Build argv array with a dummy program name at index 0
+        std::vector<const char*> argv;
+        argv.push_back("test");  // argv[0] = program name
+        for (auto& a : args) {
+            argv.push_back(a.c_str());
+        }
+        ctx.applyCommandLine(static_cast<int>(argv.size()), argv.data());
     }
 }
 
