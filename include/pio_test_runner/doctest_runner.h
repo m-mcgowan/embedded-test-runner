@@ -358,6 +358,40 @@ inline std::vector<String> tokenize_args(const String& body) {
 }
 
 /**
+ * @brief Build argv for doctest's applyCommandLine().
+ *
+ * doctest expects --flag=value (joined with =), not --flag value
+ * (separate entries). This function joins adjacent flag+value pairs
+ * and prepends a dummy program name at argv[0].
+ *
+ * Examples:
+ *   ["--tc", "*foo*"]           → ["test", "--tc=*foo*"]
+ *   ["--no-skip"]               → ["test", "--no-skip"]
+ *   ["--tc", "*a*", "--ts", "*b*"] → ["test", "--tc=*a*", "--ts=*b*"]
+ *   ["--tc=*foo*"]              → ["test", "--tc=*foo*"]  (already joined)
+ */
+inline std::vector<String> build_doctest_argv(const std::vector<String>& args) {
+    std::vector<String> result;
+    result.push_back("test");  // argv[0] = program name
+    for (size_t i = 0; i < args.size(); i++) {
+        if (args[i].startsWith("--") && i + 1 < args.size()
+                && !args[i + 1].startsWith("--")) {
+            // Join --flag value → --flag=value
+            String combined;
+            combined += args[i].c_str();
+            combined += "=";
+            combined += args[i + 1].c_str();
+            result.push_back(combined);
+            i++;  // skip the value
+        } else {
+            // Standalone flag (e.g. --no-skip) or already joined (--tc=*foo*)
+            result.push_back(args[i]);
+        }
+    }
+    return result;
+}
+
+/**
  * @brief Parse and apply filter flags from a RUN: command body.
  *
  * Two-phase processing:
@@ -383,15 +417,14 @@ inline void apply_run_filters(doctest::Context& ctx, const String& body) {
     // Phase 1: extract and apply PTR-specific flags (modifies registry)
     extract_ptr_flags(args);
 
-    // Phase 2: build argc/argv and pass to doctest's native parser
+    // Phase 2: pass remaining flags to doctest's native parser.
     if (!args.empty()) {
-        // Build argv array with a dummy program name at index 0
-        std::vector<const char*> argv;
-        argv.push_back("test");  // argv[0] = program name
-        for (auto& a : args) {
-            argv.push_back(a.c_str());
+        auto argv = build_doctest_argv(args);
+        std::vector<const char*> argv_ptrs;
+        for (auto& a : argv) {
+            argv_ptrs.push_back(a.c_str());
         }
-        ctx.applyCommandLine(static_cast<int>(argv.size()), argv.data());
+        ctx.applyCommandLine(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
     }
 }
 

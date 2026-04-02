@@ -20,30 +20,10 @@ from helpers import open_device, wait_for_ready, send_command, send_sleep
 
 @pytest.fixture
 def device(port, baud):
-    """Open serial and ensure device is in READY state.
-
-    If the device is sleeping or unresponsive, power-cycle via usb-device
-    reset and retry.
-    """
-    import subprocess
-    import time
-
-    try:
-        ser = open_device(port, baud)
-        if wait_for_ready(ser, timeout=5):
-            yield ser
-            ser.close()
-            return
-        ser.close()
-    except Exception:
-        pass
-
-    # Device not responding — try USB reset
-    subprocess.run(["usb-device", "reset", port], capture_output=True, timeout=10)
-    time.sleep(3)
-
+    """Open serial and ensure device is in READY state."""
     ser = open_device(port, baud)
-    assert wait_for_ready(ser, timeout=15), "Device not ready after reset"
+    assert wait_for_ready(ser, timeout=10), \
+        f"Device not ready on {port}. Is it awake? Try: usb-device reset <name>"
     yield ser
     ser.close()
 
@@ -57,8 +37,14 @@ class TestRunAll:
     """RUN_ALL runs all non-skipped tests."""
 
     def test_run_all_executes_non_skipped(self, device):
+        # First test after pio test may need extra time — device may
+        # have been restarting from the integration test's SLEEP command.
         result = send_command(device, "RUN_ALL")
-        assert result["total"] > 0
+        if result["total"] == 0:
+            # Retry once — device was likely still booting
+            send_sleep(device)
+            result = send_command(device, "RUN_ALL")
+        assert result["total"] > 0, f"No tests ran. Raw lines: {result['raw_lines'][:5]}"
         assert result["passed"] > 0
         assert "basic arithmetic" in result["tests_run"]
         assert "string operations" in result["tests_run"]

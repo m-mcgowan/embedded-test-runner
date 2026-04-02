@@ -46,6 +46,7 @@ public:
         s_ = s_.substr(start, end - start + 1);
     }
     String& operator+=(char c) { s_ += c; return *this; }
+    String& operator+=(const char* s) { s_ += s; return *this; }
     bool operator==(const String& other) const { return s_ == other.s_; }
     friend bool operator==(const String& a, const char* b) { return a.s_ == b; }
 };
@@ -206,6 +207,87 @@ TEST_CASE("extra whitespace") {
 }
 
 }  // TEST_SUITE tokenize_args
+
+// =========================================================================
+// build_doctest_argv — flag=value joining for applyCommandLine
+// =========================================================================
+
+namespace ptr_doctest {
+
+inline std::vector<String> build_doctest_argv(const std::vector<String>& args) {
+    std::vector<String> result;
+    result.push_back("test");
+    for (size_t i = 0; i < args.size(); i++) {
+        if (args[i].startsWith("--") && i + 1 < args.size()
+                && !args[i + 1].startsWith("--")) {
+            String combined;
+            combined += args[i].c_str();
+            combined += "=";
+            combined += args[i + 1].c_str();
+            result.push_back(combined);
+            i++;
+        } else {
+            result.push_back(args[i]);
+        }
+    }
+    return result;
+}
+
+}  // namespace ptr_doctest
+
+TEST_SUITE("build_doctest_argv") {
+
+TEST_CASE("flag and value joined with =") {
+    auto args = ptr_doctest::tokenize_args("--tc *foo*");
+    auto argv = ptr_doctest::build_doctest_argv(args);
+    REQUIRE(argv.size() == 2);
+    CHECK(argv[0] == "test");
+    CHECK(argv[1] == "--tc=*foo*");
+}
+
+TEST_CASE("standalone flag preserved") {
+    auto args = ptr_doctest::tokenize_args("--no-skip");
+    auto argv = ptr_doctest::build_doctest_argv(args);
+    REQUIRE(argv.size() == 2);
+    CHECK(argv[0] == "test");
+    CHECK(argv[1] == "--no-skip");
+}
+
+TEST_CASE("multiple flags joined independently") {
+    auto args = ptr_doctest::tokenize_args("--tc *a* --ts *b*");
+    auto argv = ptr_doctest::build_doctest_argv(args);
+    REQUIRE(argv.size() == 3);
+    CHECK(argv[0] == "test");
+    CHECK(argv[1] == "--tc=*a*");
+    CHECK(argv[2] == "--ts=*b*");
+}
+
+TEST_CASE("already-joined flag=value preserved") {
+    auto args = ptr_doctest::tokenize_args("--tc=*foo*");
+    auto argv = ptr_doctest::build_doctest_argv(args);
+    REQUIRE(argv.size() == 2);
+    CHECK(argv[0] == "test");
+    CHECK(argv[1] == "--tc=*foo*");
+}
+
+TEST_CASE("mixed standalone and value flags") {
+    auto args = ptr_doctest::tokenize_args("--no-skip --tc *foo* --tse *slow*");
+    auto argv = ptr_doctest::build_doctest_argv(args);
+    REQUIRE(argv.size() == 4);
+    CHECK(argv[0] == "test");
+    CHECK(argv[1] == "--no-skip");
+    CHECK(argv[2] == "--tc=*foo*");
+    CHECK(argv[3] == "--tse=*slow*");
+}
+
+TEST_CASE("empty args produces only program name") {
+    std::vector<String> args;
+    auto argv = ptr_doctest::build_doctest_argv(args);
+    REQUIRE(argv.size() == 1);
+    CHECK(argv[0] == "test");
+}
+
+}  // TEST_SUITE build_doctest_argv
 
 // Skip-decorated targets for modify_skip tests
 TEST_CASE("_target_skip_A" * doctest::skip()) { FAIL("should not run"); }

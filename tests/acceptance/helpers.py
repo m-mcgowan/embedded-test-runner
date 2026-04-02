@@ -8,39 +8,59 @@ import serial as pyserial
 from pio_test_runner.protocol import format_crc
 
 
-def open_device(port, baud=115200, retries=5):
+def open_device(port, baud=115200, retries=10):
     """Open serial connection and drain stale data.
 
-    Retries on failure — USB-CDC ports can take several seconds to
-    re-enumerate after a device reset.
+    Retries on failure — ESP32-S3 USB-CDC ports can take several seconds
+    to re-enumerate after a device restart (esp_restart drops USB briefly).
     """
     for attempt in range(retries):
         try:
             ser = pyserial.Serial(port, baud, timeout=1)
+            # Verify port is actually usable (not just openable)
             ser.reset_input_buffer()
             return ser
         except (OSError, pyserial.SerialException):
             if attempt < retries - 1:
-                time.sleep(2)
+                time.sleep(1)
             else:
                 raise
 
 
 def wait_for_ready(ser, timeout=15):
-    """Wait for PTR:READY from device. Sends RESTART if needed."""
+    """Wait for PTR:READY from device.
+
+    If the device doesn't respond, sends RESTART to wake it from
+    the idle loop. If the port itself is dead (device sleeping),
+    the caller must handle the SerialException and power-cycle.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        line = ser.readline().decode("utf-8", errors="replace").strip()
+        try:
+            line = ser.readline().decode("utf-8", errors="replace").strip()
+        except Exception:
+            time.sleep(1)
+            continue
         if "PTR:READY" in line:
             return True
-    # Try restart
-    cmd = format_crc("RESTART")
-    ser.write((cmd + "\n").encode())
+    # Device may be in idle loop but not sending READY yet — send RESTART
+    try:
+        cmd = format_crc("RESTART")
+        ser.write((cmd + "\n").encode())
+    except Exception:
+        return False
     time.sleep(3)
-    ser.reset_input_buffer()
+    try:
+        ser.reset_input_buffer()
+    except Exception:
+        return False
     deadline = time.time() + 15
     while time.time() < deadline:
-        line = ser.readline().decode("utf-8", errors="replace").strip()
+        try:
+            line = ser.readline().decode("utf-8", errors="replace").strip()
+        except Exception:
+            time.sleep(1)
+            continue
         if "PTR:READY" in line:
             return True
     return False
@@ -62,6 +82,7 @@ def send_command(ser, command, timeout=120):
     assert wait_for_ready(ser), "Device did not send PTR:READY"
 
     crc_command = format_crc(command)
+    print(f"[accept] Sending: {crc_command}")
     ser.write((crc_command + "\n").encode())
 
     tests_run = []
@@ -73,7 +94,23 @@ def send_command(ser, command, timeout=120):
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        line = ser.readline().decode("utf-8", errors="replace").strip()
+        try:
+            line = ser.readline().decode("utf-8", errors="replace").strip()
+        except (OSError, pyserial.SerialException):
+            # USB-CDC port dropped momentarily (e.g. after RESTART)
+            # Wait and retry — port usually comes back within seconds
+            time.sleep(2)
+            try:
+                ser.close()
+            except Exception:
+                pass
+            for _ in range(5):
+                try:
+                    ser.open()
+                    break
+                except Exception:
+                    time.sleep(1)
+            continue
         if not line:
             continue
         raw_lines.append(line)
@@ -137,10 +174,22 @@ def send_command(ser, command, timeout=120):
 
 
 def send_sleep(ser):
-    """Send SLEEP command to put device in idle state for next test."""
-    cmd = format_crc("SLEEP")
-    ser.write((cmd + "\n").encode())
-    time.sleep(0.5)
+    """Reset device for next test cycle.
+
+    Sends RESTART (not SLEEP) so the device reboots and enters READY
+    state for the next test. SLEEP would enter deep sleep, losing the
+    USB-CDC port.
+
+    ESP32-S3 USB-CDC may drop briefly during restart. The next test's
+    open_device() retries to handle this.
+    """
+    try:
+        cmd = format_crc("RESTART")
+        ser.write((cmd + "\n").encode())
+    except Exception:
+        pass  # port may already be gone
+    # Wait for device to reboot and USB-CDC to re-enumerate
+    time.sleep(5)
 
 
 def has_line_matching(lines, pattern):
