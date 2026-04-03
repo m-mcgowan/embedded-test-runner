@@ -240,3 +240,101 @@ class TestSingleSleepCycle:
             f"Expected RUN: *sleep test* in {cmds}"
         assert any("RESUME_AFTER" in c and "sleep test" in c for c in cmds), \
             f"Expected RESUME_AFTER: sleep test in {cmds}"
+
+
+class TestSleepWithResumeAfter:
+    """Phase 1 -> sleep -> Phase 2 -> RESUME_AFTER with remaining tests.
+
+    Protocol exchange:
+
+      Phase 1 (first boot):
+        Device: PTR:READY
+        Runner: RUN_ALL
+        Device: PTR:TEST:START suite="DeepSleep" name="sleep test"
+        Device: PTR:SLEEP ms=3000
+        Runner: (closes serial)
+
+      Phase 2 (after wake):
+        Device: PTR:READY
+        Runner: RUN: *sleep test*
+        Device: PTR:TEST:START suite="DeepSleep" name="sleep test"
+        Device: PTR:DONE
+
+      Restart:
+        Runner: RESTART command
+        Device: (reboots)
+
+      Phase 3 (RESUME_AFTER with remaining tests):
+        Device: PTR:READY
+        Runner: RESUME_AFTER: sleep test
+        Device: PTR:TEST:START suite="Other" name="normal test"
+        Device: PTR:DONE
+    """
+
+    def test_sleep_then_resume_remaining(self):
+        mock_ser = MockSerial()
+
+        # Phase 1: boot -> run -> sleep
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="DeepSleep" name="sleep test"'),
+            _crc("PTR:SLEEP ms=3000"),
+        ])
+
+        # Phase 2: wake -> resume sleeping test -> done
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="DeepSleep" name="sleep test"'),
+            _crc("PTR:DONE"),
+        ])
+
+        # Phase 2.5: _restart_device opens serial briefly to send RESTART.
+        # FastClock makes its read deadline expire immediately.
+        mock_ser.add_phase([])
+
+        # Phase 3: RESUME_AFTER -> device runs remaining tests -> done
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="Other" name="normal test"'),
+            _crc("PTR:DONE"),
+        ])
+
+        runner = make_orchestrated_runner(mock_ser)
+
+        open_count = 0
+
+        def mock_open_serial(reset=True):
+            nonlocal open_count
+            if open_count > 0:
+                mock_ser.reopen()
+            runner._ser = mock_ser
+            runner._port_path = "/dev/mock"
+            open_count += 1
+
+        fast_time = FastClock(start=1000.0, step=100.0)
+
+        with patch.object(runner, "configure_orchestrated", return_value=True), \
+             patch.object(runner, "configure_sleep_padding", return_value=0), \
+             patch.object(runner, "_open_serial", side_effect=mock_open_serial), \
+             patch.object(runner, "_close_serial", side_effect=lambda: mock_ser.close()), \
+             patch.dict(os.environ, {"PTR_POST_TEST": "none"}, clear=True), \
+             patch("pio_test_runner.runner.SleepWakeMonitor", MockSleepWakeMonitor), \
+             patch("time.sleep"), \
+             patch("time.monotonic", return_value=0), \
+             patch("time.time", side_effect=fast_time):
+            runner.stage_testing()
+
+        assert runner.protocol.state == ProtocolState.FINISHED
+
+        # Verify the three-phase command sequence
+        cmds = mock_ser.get_commands()
+        assert any("RUN_ALL" in c for c in cmds), f"Expected RUN_ALL in {cmds}"
+        assert any("RUN:" in c and "sleep test" in c for c in cmds), \
+            f"Expected RUN: *sleep test* in {cmds}"
+        assert any("RESUME_AFTER" in c and "sleep test" in c for c in cmds), \
+            f"Expected RESUME_AFTER: sleep test in {cmds}"
+
+        # Verify the "normal test" actually ran in Phase 3
+        # The protocol tracks all TEST:START names across cycles
+        assert "normal test" in runner.protocol.completed_tests, \
+            f"Expected 'normal test' in completed_tests: {runner.protocol.completed_tests}"
