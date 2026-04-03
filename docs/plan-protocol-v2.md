@@ -148,13 +148,76 @@ Supported configuration flags (proposed):
 - `--tc`, `--ts`, `--tce`, `--tse` — existing filter flags
 - `--verbose` — enable detailed test output on device (future)
 
+## Handshake for disruptive commands
+
+### Problem
+
+Commands that interrupt the serial stream (SLEEP, RESTART, LIGHTSLEEP)
+are currently fire-and-forget. The device sends the signal and immediately
+acts, without knowing if the host received it. This causes:
+
+- Host misses PTR:SLEEP → never reconnects after wake
+- Host misses PTR:DONE before SLEEP → reports test as failed
+- Acceptance tests can't safely send RUN_ALL when sleep tests are present
+
+### Design
+
+All disruptive commands use a two-phase handshake:
+
+```
+Device: TEST:SLEEP ms=3000       ← intent
+Host:   ACK                      ← host confirms receipt
+Device: (enters deep sleep)
+
+Device: TEST:RESTART
+Host:   ACK
+Device: esp_restart()
+
+Device: TEST:IDLE mode=sleep     ← post-test intent
+Host:   ACK  (or OVERRIDE wait)  ← host can override
+Device: (acts on final mode)
+```
+
+Timeout fallback: if no ACK arrives within 2s, the device proceeds
+anyway (for standalone operation without a host runner). The timeout
+is configurable via `PTR_ACK_TIMEOUT_MS`.
+
+This applies to:
+- `signal_sleep()` — wait for ACK before `esp_deep_sleep_start()`
+- `signal_restart()` — wait for ACK before `esp_restart()`
+- `signal_lightsleep()` — wait for ACK before `esp_light_sleep_start()`
+- Post-test idle mode — wait for ACK/OVERRIDE before acting
+
+### Firmware API
+
+```cpp
+// In test_runner.h:
+bool wait_for_ack(uint32_t timeout_ms = 2000);
+
+void signal_sleep(uint32_t ms) {
+    emit(Serial, "PTR:SLEEP ms=%lu", (unsigned long)ms);
+    wait_for_ack();  // blocks until ACK or timeout
+}
+```
+
+### Runner API
+
+The runner sends ACK after processing each disruptive signal:
+
+```python
+def _on_sleep(self, duration_ms):
+    self._send_ack()  # device can now sleep
+    self._handle_sleep_resume()
+```
+
 ## Migration
 
 1. Add `TEST:` prefix support alongside `PTR:` (both accepted)
-2. Add `TEST_AFTER_ACTION` callback
-3. Add idle mode declaration and override
-4. Deprecate `PTR:` prefix (warn in logs)
-5. Remove `PTR:` support in a future major version
+2. Add handshake for disruptive commands (ACK protocol)
+3. Add `TEST_AFTER_ACTION` callback
+4. Add idle mode declaration and override
+5. Deprecate `PTR:` prefix (warn in logs)
+6. Remove `PTR:` support in a future major version
 
 ## Files to modify
 
