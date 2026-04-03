@@ -1,15 +1,17 @@
 """Safe serial port management for ESP32 USB-CDC devices.
 
-ESP32-S3 USB-CDC resets the device when DTR is asserted on serial open.
-macOS asserts DTR by default when opening a serial port. This module
-provides a safe open that avoids the reset.
+Mirrors PlatformIO device monitor's serial setup: ``do_not_open=True``,
+only set DTR/RTS if explicitly requested (reset=True), then ``open()``.
+When reset=False (reconnect after restart/sleep), DTR/RTS are left as
+None — pyserial sends no SET_CONTROL_LINE_STATE USB control transfer,
+avoiding USB_UART_CHIP_RESET on ESP32-S3.
 
 Usage::
 
     from pio_test_runner.serial_port import open_serial
 
     ser = open_serial("/dev/cu.usbmodem1424101")
-    # Device is NOT reset — DTR/RTS held low
+    # Device is NOT reset — DTR/RTS not touched
     line = ser.readline()
 
 To intentionally reset the device (e.g. after upload)::
@@ -28,9 +30,10 @@ except ImportError:
 def open_serial(port, baudrate=115200, timeout=1, reset=False, retries=5):
     """Open a serial port without triggering a device reset.
 
-    Uses ``serial_for_url(do_not_open=True)`` to pre-configure DTR/RTS
-    before opening. This prevents ESP32-S3 USB-CDC from interpreting the
-    DTR assertion as a reset request (USB_UART_CHIP_RESET).
+    Mirrors PlatformIO device monitor: ``serial_for_url(do_not_open=True)``
+    then ``open()`` without touching DTR/RTS. This avoids sending a
+    SET_CONTROL_LINE_STATE USB control transfer that could trigger
+    USB_UART_CHIP_RESET on ESP32-S3.
 
     Args:
         port: Serial port path (e.g. /dev/cu.usbmodem1424101)
@@ -54,10 +57,11 @@ def open_serial(port, baudrate=115200, timeout=1, reset=False, retries=5):
             ser.baudrate = baudrate
             ser.timeout = timeout
 
-            if not reset:
-                # Hold DTR/RTS low to prevent ESP32-S3 USB-CDC reset
-                ser.dtr = False
-                ser.rts = False
+            # When reset=False, leave DTR/RTS as None (pyserial default).
+            # This means pyserial sends NO SET_CONTROL_LINE_STATE during
+            # open(), matching PIO device monitor behavior. Explicitly
+            # setting dtr=False would send a USB control transfer that
+            # can trigger USB_UART_CHIP_RESET on some ESP32-S3 boards.
 
             ser.open()
 
