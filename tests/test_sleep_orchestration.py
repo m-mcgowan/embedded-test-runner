@@ -338,3 +338,129 @@ class TestSleepWithResumeAfter:
         # The protocol tracks all TEST:START names across cycles
         assert "normal test" in runner.protocol.completed_tests, \
             f"Expected 'normal test' in completed_tests: {runner.protocol.completed_tests}"
+
+
+class TestTwoConsecutiveSleepTests:
+    """Two tests that both sleep, with a normal test after.
+
+    Protocol exchange:
+
+      Phase 1: RUN_ALL → test_a sleeps
+        Device: PTR:READY
+        Runner: RUN_ALL
+        Device: PTR:TEST:START suite="Sleep" name="test_a"
+        Device: PTR:SLEEP ms=2000
+
+      Phase 2: wake → test_a Phase 2 completes
+        Device: PTR:READY
+        Runner: RUN: *test_a*
+        Device: PTR:TEST:START suite="Sleep" name="test_a"
+        Device: PTR:DONE
+
+      Restart + RESUME_AFTER test_a → test_b sleeps
+        Runner: RESTART
+        Device: PTR:READY
+        Runner: RESUME_AFTER: test_a
+        Device: PTR:TEST:START suite="Sleep" name="test_b"
+        Device: PTR:SLEEP ms=3000
+
+      Phase 4: wake → test_b Phase 2 completes
+        Device: PTR:READY
+        Runner: RUN: *test_b*
+        Device: PTR:TEST:START suite="Sleep" name="test_b"
+        Device: PTR:DONE
+
+      Restart + RESUME_AFTER test_b → test_c runs normally
+        Runner: RESTART
+        Device: PTR:READY
+        Runner: RESUME_AFTER: test_b
+        Device: PTR:TEST:START suite="Other" name="test_c"
+        Device: PTR:DONE
+    """
+
+    def test_two_sleep_tests_then_normal(self):
+        mock_ser = MockSerial()
+
+        # Phase 1: boot -> RUN_ALL -> test_a sleeps
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="Sleep" name="test_a"'),
+            _crc("PTR:SLEEP ms=2000"),
+        ])
+
+        # Phase 2: wake -> RUN: *test_a* -> test_a Phase 2 completes
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="Sleep" name="test_a"'),
+            _crc("PTR:DONE"),
+        ])
+
+        # Phase 2.5: _restart_device opens serial briefly to send RESTART.
+        mock_ser.add_phase([])
+
+        # Phase 3: RESUME_AFTER test_a -> test_b starts and sleeps
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="Sleep" name="test_b"'),
+            _crc("PTR:SLEEP ms=3000"),
+        ])
+
+        # Phase 4: wake -> RUN: *test_b* -> test_b Phase 2 completes
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="Sleep" name="test_b"'),
+            _crc("PTR:DONE"),
+        ])
+
+        # Phase 4.5: _restart_device opens serial briefly to send RESTART.
+        mock_ser.add_phase([])
+
+        # Phase 5: RESUME_AFTER test_b -> test_c runs normally -> done
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="Other" name="test_c"'),
+            _crc("PTR:DONE"),
+        ])
+
+        runner = make_orchestrated_runner(mock_ser)
+
+        open_count = 0
+
+        def mock_open_serial(reset=True):
+            nonlocal open_count
+            if open_count > 0:
+                mock_ser.reopen()
+            runner._ser = mock_ser
+            runner._port_path = "/dev/mock"
+            open_count += 1
+
+        fast_time = FastClock(start=1000.0, step=100.0)
+
+        with patch.object(runner, "configure_orchestrated", return_value=True), \
+             patch.object(runner, "configure_sleep_padding", return_value=0), \
+             patch.object(runner, "_open_serial", side_effect=mock_open_serial), \
+             patch.object(runner, "_close_serial", side_effect=lambda: mock_ser.close()), \
+             patch.dict(os.environ, {"PTR_POST_TEST": "none"}, clear=True), \
+             patch("pio_test_runner.runner.SleepWakeMonitor", MockSleepWakeMonitor), \
+             patch("time.sleep"), \
+             patch("time.monotonic", return_value=0), \
+             patch("time.time", side_effect=fast_time):
+            runner.stage_testing()
+
+        assert runner.protocol.state == ProtocolState.FINISHED
+
+        # Verify the full multi-sleep command sequence
+        cmds = mock_ser.get_commands()
+        assert any("RUN_ALL" in c for c in cmds), f"Expected RUN_ALL in {cmds}"
+        assert any("RUN:" in c and "test_a" in c for c in cmds), \
+            f"Expected RUN: *test_a* in {cmds}"
+        assert any("RESUME_AFTER" in c and "test_a" in c for c in cmds), \
+            f"Expected RESUME_AFTER: test_a in {cmds}"
+        assert any("RUN:" in c and "test_b" in c for c in cmds), \
+            f"Expected RUN: *test_b* in {cmds}"
+        assert any("RESUME_AFTER" in c and "test_b" in c for c in cmds), \
+            f"Expected RESUME_AFTER: test_b in {cmds}"
+
+        # Verify test_c actually ran in the final RESUME_AFTER phase
+        assert "test_c" in runner.protocol.completed_tests, \
+            f"Expected 'test_c' in completed_tests: {runner.protocol.completed_tests}"
