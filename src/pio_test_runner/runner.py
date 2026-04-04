@@ -138,6 +138,12 @@ class EmbeddedTestRunner(_BaseRunner):
         # Track whether our runner explicitly finished the suite
         self._finished_by_runner = False
 
+        # Track per-test assertion failures (orchestrated mode).
+        # Maps test_full_name → list of failure messages.
+        # PIO's DoctestTestCaseParser may not be active in orchestrated mode,
+        # so we parse assertion failures ourselves.
+        self._test_failures: dict[str, list[str]] = {}
+
         # Sleep/wake monitoring via port disappearance (USB-CDC)
         self.sleep_monitor = SleepWakeMonitor()
 
@@ -194,14 +200,20 @@ class EmbeddedTestRunner(_BaseRunner):
 
         PIO owns serial and handles echoing + result parsing.
         We feed our receivers for crash detection, disconnect handling,
-        memory tracking, and timing.
+        memory tracking, timing, and assertion failure tracking.
         """
         if self._finished_by_runner:
             return
 
+        prev_state = self.protocol.state
         self.router.feed(line)
         self._sync_test_name()
         self._check_crash()
+        self._check_assertion_failure(line)
+
+        # Report failures when PTR:DONE transitions to FINISHED
+        if self.protocol.state == ProtocolState.FINISHED and prev_state != ProtocolState.FINISHED:
+            self._report_test_failures()
 
     # ------------------------------------------------------------------
     # Orchestrated mode (runner owns serial)
@@ -455,6 +467,7 @@ class EmbeddedTestRunner(_BaseRunner):
             # Check if finished
             if self.protocol.state == ProtocolState.FINISHED:
                 _echo("[runner] PTR:DONE received")
+                self._report_test_failures()
                 break
             if self.crash_detector.triggered:
                 break
@@ -474,6 +487,7 @@ class EmbeddedTestRunner(_BaseRunner):
                     self._on_serial_data(data)
                 if self.protocol.state == ProtocolState.FINISHED:
                     _echo("[runner] PTR:DONE received")
+                    self._report_test_failures()
                     break
 
         # Post-test device command: SLEEP (default), LIGHTSLEEP, RESTART,
@@ -542,6 +556,7 @@ class EmbeddedTestRunner(_BaseRunner):
                     _echo(f"[runner] Tests: {p.test_total} total")
             self._sync_test_name()
             self._check_crash()
+            self._check_assertion_failure(line)
             if self._finished_by_runner:
                 return
 
@@ -744,6 +759,47 @@ class EmbeddedTestRunner(_BaseRunner):
         test_full = self.protocol.current_test_full
         if test_full:
             self.memory_tracker.set_current_test(test_full)
+
+    def _check_assertion_failure(self, line):
+        """Track doctest assertion failures for the current test.
+
+        PIO's DoctestTestCaseParser may not run in orchestrated mode (it
+        depends on DoctestTestRunner being the base class, which varies by
+        PIO version). We detect failures ourselves by matching doctest's
+        error output format: ``file.cpp:42: ERROR: CHECK(...) ...``
+        """
+        # doctest error format: "path:line: ERROR:" or "path:line: FATAL ERROR:"
+        for token in (": FATAL ERROR:", ": ERROR:"):
+            idx = line.find(token)
+            if idx != -1:
+                test_name = self.protocol.current_test_full or "unknown"
+                msg = line[idx + len(token):].strip()
+                if test_name not in self._test_failures:
+                    self._test_failures[test_name] = []
+                self._test_failures[test_name].append(msg)
+                return
+
+    def _report_test_failures(self):
+        """Add FAILED test cases to the suite for any tracked assertion failures.
+
+        Called after PTR:DONE to ensure failures are reported even if PIO's
+        own parser didn't see them.
+        """
+        if TestCase is None or TestStatus is None:
+            return
+        for test_name, messages in self._test_failures.items():
+            # Check if PIO's parser already added a FAILED case for this test
+            already_reported = any(
+                c.name == test_name and c.status == TestStatus.FAILED
+                for c in self.test_suite.cases
+            )
+            if not already_reported:
+                self.test_suite.add_case(TestCase(
+                    name=test_name,
+                    status=TestStatus.FAILED,
+                    message=messages[0] if messages else "Assertion failed",
+                    stdout="\n".join(messages),
+                ))
 
     def _check_crash(self):
         """Check for crash and report if detected."""

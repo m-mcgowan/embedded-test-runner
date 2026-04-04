@@ -446,3 +446,75 @@ class TestTwoConsecutiveSleepTests:
         # Verify test_c actually ran in the final RESUME_AFTER phase
         assert "test_c" in runner.protocol.completed_tests, \
             f"Expected 'test_c' in completed_tests: {runner.protocol.completed_tests}"
+
+
+class TestFailurePropagationAcrossSleepCycles:
+    """Assertion failures in RESUME_AFTER phases are reported.
+
+    A test that fails after a sleep cycle should still produce a
+    FAILED case in the test suite — the sleep orchestration must not
+    swallow failures.
+    """
+
+    def test_failure_in_resume_after_phase(self):
+        mock_ser = MockSerial()
+
+        # Phase 1: sleep test
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="DeepSleep" name="sleep test"'),
+            _crc("PTR:SLEEP ms=3000"),
+        ])
+
+        # Phase 2: sleep test Phase 2 passes
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="DeepSleep" name="sleep test"'),
+            "  CHECK( cause == ESP_SLEEP_WAKEUP_TIMER ) is correct!",
+            _crc("PTR:DONE"),
+        ])
+
+        # RESUME_AFTER: remaining test FAILS
+        mock_ser.add_phase([
+            _crc("PTR:READY"),
+            _crc('PTR:TEST:START suite="Sensor" name="calibration check"'),
+            "test/test_sensor.cpp:55: ERROR: CHECK( offset < 10 ) is NOT correct!",
+            "  values: CHECK( 42 < 10 )",
+            _crc("PTR:DONE"),
+        ])
+
+        runner = make_orchestrated_runner(mock_ser)
+        open_count = 0
+
+        def mock_open_serial(reset=True):
+            nonlocal open_count
+            if open_count > 0:
+                mock_ser.reopen()
+            runner._ser = mock_ser
+            runner._port_path = "/dev/mock"
+            open_count += 1
+
+        fast_time = FastClock(start=1000.0, step=100.0)
+
+        with patch.object(runner, "configure_orchestrated", return_value=True), \
+             patch.object(runner, "configure_sleep_padding", return_value=0), \
+             patch.object(runner, "_open_serial", side_effect=mock_open_serial), \
+             patch.object(runner, "_close_serial", side_effect=lambda: mock_ser.close()), \
+             patch.dict(os.environ, {"PTR_POST_TEST": "none"}, clear=True), \
+             patch("pio_test_runner.runner.SleepWakeMonitor", MockSleepWakeMonitor), \
+             patch("time.sleep"), \
+             patch("time.monotonic", return_value=0), \
+             patch("time.time", side_effect=fast_time):
+            runner.stage_testing()
+
+        assert runner.protocol.state == ProtocolState.FINISHED
+
+        # The failure in the RESUME_AFTER phase must be tracked
+        assert "Sensor/calibration check" in runner._test_failures
+
+        # And reported to the test suite
+        from conftest import MockTestStatus
+        failed = [c for c in runner.test_suite.cases
+                  if c.status == MockTestStatus.FAILED]
+        assert len(failed) == 1
+        assert failed[0].name == "Sensor/calibration check"

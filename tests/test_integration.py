@@ -116,6 +116,45 @@ DOCTEST_SESSION_SLEEP = [
     _crc("PTR:SLEEP ms=15000"),
 ]
 
+# Session with a single failing assertion
+DOCTEST_SESSION_FAIL = [
+    "Board revision: 2",
+    _crc("PTR:READY"),
+    "Runner: RUN_ALL (no additional filter)",
+    "",
+    _crc('PTR:TEST:START suite="GPS" name="Navigation rate test"'),
+    _crc("PTR:MEM:BEFORE free=200000 min=180000"),
+    "test/test_gps.cpp:42: ERROR: CHECK( nav_rate == 5 ) is NOT correct!",
+    "  values: CHECK( 3 == 5 )",
+    _crc("PTR:MEM:AFTER free=199500 delta=-500 min=179000"),
+    "[doctest] test cases:  1 |  0 passed | 1 failed |",
+    "[doctest] assertions:  1 |  0 passed | 1 failed |",
+    "[doctest] Status: FAILURE!",
+    _crc("PTR:DONE"),
+]
+
+# Session with mixed pass and fail
+DOCTEST_SESSION_MIXED = [
+    "Board revision: 2",
+    _crc("PTR:READY"),
+    "Runner: RUN_ALL (no additional filter)",
+    "",
+    _crc('PTR:TEST:START suite="GPS" name="Satellite count"'),
+    _crc("PTR:MEM:BEFORE free=200000 min=180000"),
+    "  CHECK( sat_count >= 4 ) is correct!",
+    _crc("PTR:MEM:AFTER free=199500 delta=-500 min=179000"),
+    "",
+    _crc('PTR:TEST:START suite="GPS" name="Navigation rate test"'),
+    _crc("PTR:MEM:BEFORE free=199500 min=179000"),
+    "test/test_gps.cpp:42: ERROR: CHECK( nav_rate == 5 ) is NOT correct!",
+    "  values: CHECK( 3 == 5 )",
+    _crc("PTR:MEM:AFTER free=199000 delta=-500 min=178500"),
+    "[doctest] test cases:  2 |  1 passed | 1 failed |",
+    "[doctest] assertions:  2 |  1 passed | 1 failed |",
+    "[doctest] Status: FAILURE!",
+    _crc("PTR:DONE"),
+]
+
 # Session with timeout annotation on test
 DOCTEST_SESSION_TIMEOUT = [
     "Board revision: 2",
@@ -534,3 +573,67 @@ class TestSummaryReporting:
         captured = capsys.readouterr()
         # No memory leaks, no slow tests
         assert "leak" not in captured.out.lower()
+
+
+class TestAssertionFailurePropagation:
+    """Verify that doctest assertion failures are tracked and reported.
+
+    PIO's DoctestTestCaseParser may not be active in orchestrated mode.
+    The runner must detect assertion failures itself from the doctest
+    ERROR: output and add FAILED cases to the test suite.
+    """
+
+    def test_single_failure_tracked(self):
+        """A failing CHECK produces a FAILED test case in the suite."""
+        runner = make_runner()
+        feed_session(runner, DOCTEST_SESSION_FAIL)
+
+        assert runner.protocol.state == ProtocolState.FINISHED
+        assert "GPS/Navigation rate test" in runner._test_failures
+        assert len(runner._test_failures["GPS/Navigation rate test"]) == 1
+
+    def test_single_failure_reported_to_suite(self):
+        """After PTR:DONE, FAILED case is added to test_suite.cases."""
+        runner = make_runner()
+        feed_session(runner, DOCTEST_SESSION_FAIL)
+
+        # _report_test_failures is called when PTR:DONE is received
+        # In line-callback mode, we need to call it manually since
+        # the mock doesn't run _run_test_cycle
+        runner._report_test_failures()
+
+        failed = [c for c in runner.test_suite.cases
+                  if c.status == MockTestStatus.FAILED]
+        assert len(failed) == 1
+        assert failed[0].name == "GPS/Navigation rate test"
+
+    def test_mixed_pass_fail(self):
+        """Mixed session: one pass, one fail. Only failed test reported."""
+        runner = make_runner()
+        feed_session(runner, DOCTEST_SESSION_MIXED)
+        runner._report_test_failures()
+
+        failed = [c for c in runner.test_suite.cases
+                  if c.status == MockTestStatus.FAILED]
+        assert len(failed) == 1
+        assert failed[0].name == "GPS/Navigation rate test"
+
+        # The passing test should NOT be in failures
+        assert "GPS/Satellite count" not in runner._test_failures
+
+    def test_passing_session_no_failures(self):
+        """A fully passing session should have no tracked failures."""
+        runner = make_runner()
+        feed_session(runner, DOCTEST_SESSION_PASS)
+
+        assert len(runner._test_failures) == 0
+
+    def test_failure_message_captured(self):
+        """The assertion failure message is captured for reporting."""
+        runner = make_runner()
+        feed_session(runner, DOCTEST_SESSION_FAIL)
+        runner._report_test_failures()
+
+        failed = [c for c in runner.test_suite.cases
+                  if c.status == MockTestStatus.FAILED]
+        assert "CHECK( nav_rate == 5 ) is NOT correct!" in failed[0].message
