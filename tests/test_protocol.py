@@ -1,6 +1,6 @@
 """Tests for the shared ETST: protocol parser."""
 
-from pio_test_runner.protocol import (
+from etst.protocol import (
     ParsedTag,
     compute_crc8,
     format_crc,

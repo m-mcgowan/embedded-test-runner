@@ -2,8 +2,8 @@
 
 from embedded_bridge.receivers.base import Receiver
 
-from pio_test_runner.disconnect import DisconnectHandler
-from pio_test_runner.protocol import format_crc
+from etst.disconnect import DisconnectHandler
+from etst.protocol import format_crc
 
 
 def _crc(content: str) -> str:

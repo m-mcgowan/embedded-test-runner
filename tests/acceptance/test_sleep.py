@@ -22,7 +22,7 @@ import time
 import pytest
 
 from helpers import open_device, has_line_matching
-from pio_test_runner.protocol import format_crc
+from etst.protocol import format_crc
 
 
 @pytest.fixture

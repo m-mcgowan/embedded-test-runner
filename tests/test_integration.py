@@ -20,9 +20,9 @@ from conftest import (
     MockTestSuite,
 )
 
-from pio_test_runner.protocol import format_crc
-from pio_test_runner.ready_run_protocol import ProtocolState
-from pio_test_runner.runner import EmbeddedTestRunner
+from etst.protocol import format_crc
+from etst.ready_run_protocol import ProtocolState
+from etst.runner import EmbeddedTestRunner
 
 
 def _crc(content: str) -> str:
