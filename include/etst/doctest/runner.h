@@ -1,10 +1,10 @@
 /**
- * @file doctest_runner.h
+ * @file runner.h
  * @brief Ready-to-use doctest test runner for Arduino/ESP32 with
- *        pio-test-runner protocol integration.
+ *        embedded-test-runner (etst) protocol integration.
  *
  * Provides:
- *   - PtrTestListener: doctest reporter that emits ETST:CASE:START
+ *   - EtstDoctestListener: doctest reporter that emits ETST:CASE:START
  *     and ETST:MEM:* markers (parsed by the Python host)
  *   - READY/RUN/DONE protocol handshake with the host
  *   - Compile-time filter support via TEST_FILTER_* macros
@@ -15,18 +15,18 @@
  * @code
  *   #define DOCTEST_CONFIG_IMPLEMENT
  *   #include <doctest.h>
- *   #include <pio_test_runner/doctest_runner.h>
+ *   #include <etst/doctest/runner.h>
  *
  *   void setup() { DOCTEST_SETUP(); }
  *   void loop()  { DOCTEST_LOOP(); }
  * @endcode
  *
  * For project-specific initialization (board setup, storage, etc.),
- * set callbacks on ptr_doctest::config before DOCTEST_SETUP():
+ * set callbacks on etst::config before DOCTEST_SETUP():
  * @code
  *   #define DOCTEST_CONFIG_IMPLEMENT
  *   #include <doctest.h>
- *   #include <pio_test_runner/doctest_runner.h>
+ *   #include <etst/doctest/runner.h>
  *
  *   static bool my_board_init(Print& log) {
  *       // board pin setup, storage mount, etc.
@@ -35,8 +35,8 @@
  *   static void my_cleanup() { gcov_serial_dump(); }
  *
  *   void setup() {
- *       ptr_doctest::config.board_init = my_board_init;
- *       ptr_doctest::config.after_cycle = my_cleanup;
+ *       etst::config.board_init = my_board_init;
+ *       etst::config.after_cycle = my_cleanup;
  *       DOCTEST_SETUP();
  *   }
  *   void loop() { DOCTEST_LOOP(); }
@@ -52,9 +52,9 @@
 #include <Arduino.h>
 #include "etst/test_runner.h"
 
-// _ptr_is_wake_cycle is declared in test_runner.h, defined here.
+// _etst_is_wake_cycle is declared in test_runner.h, defined here.
 // inline variable (C++17) — safe in header-only library.
-namespace pio_test_runner { inline bool _ptr_is_wake_cycle = false; }
+namespace etst { inline bool _etst_is_wake_cycle = false; }
 
 #if defined(ESP_IDF_VERSION)
 #include <esp_heap_caps.h>
@@ -62,107 +62,27 @@ namespace pio_test_runner { inline bool _ptr_is_wake_cycle = false; }
 #endif
 
 // =========================================================================
-// Test Listener — emits markers parsed by the Python host
+// Framework-agnostic configuration (namespace etst)
 // =========================================================================
+
+namespace etst {
 
 /**
- * @brief Doctest reporter that prints test names and memory stats.
+ * @brief Framework-agnostic runtime configuration.
  *
- * Emits markers consumed by the pio-test-runner Python host:
- *   - ``ETST:CASE:START suite=... name=...`` — test timing (TestTimingTracker)
- *   - ``ETST:MEM:BEFORE/AFTER`` — heap tracking (MemoryTracker)
- */
-struct PtrTestListener : doctest::IReporter {
-    size_t free_before_{0};
-    size_t min_before_{0};
-
-    PtrTestListener(const doctest::ContextOptions&) {}
-
-    void report_query(const doctest::QueryData&) override {}
-    void test_run_start() override {}
-    void test_run_end(const doctest::TestRunStats&) override {}
-    void test_case_reenter(const doctest::TestCaseData&) override {}
-    void test_case_exception(const doctest::TestCaseException&) override {}
-    void subcase_start(const doctest::SubcaseSignature&) override {}
-    void subcase_end() override {}
-    void log_assert(const doctest::AssertData&) override {}
-    void log_message(const doctest::MessageData&) override {}
-    void test_case_skipped(const doctest::TestCaseData&) override {}
-
-    void test_case_start(const doctest::TestCaseData& tc) override {
-#if defined(ESP_IDF_VERSION)
-        free_before_ = esp_get_free_heap_size();
-        min_before_ = esp_get_minimum_free_heap_size();
-#endif
-        if (tc.m_timeout > 0) {
-            pio_test_runner::print_test_start(tc.m_test_suite, tc.m_name, tc.m_timeout);
-        } else {
-            pio_test_runner::print_test_start(tc.m_test_suite, tc.m_name);
-        }
-#if defined(ESP_IDF_VERSION)
-        pio_test_runner::print_mem_before(free_before_, min_before_);
-#endif
-    }
-
-    void test_case_end(const doctest::CurrentTestCaseStats& stats) override {
-#if defined(ESP_IDF_VERSION)
-        size_t free_after = esp_get_free_heap_size();
-        size_t min_after = esp_get_minimum_free_heap_size();
-        int64_t delta = static_cast<int64_t>(free_after) - static_cast<int64_t>(free_before_);
-        pio_test_runner::print_mem_after(free_after, delta, min_after);
-        if (delta < -10000) {
-            pio_test_runner::print_mem_warning(-delta);
-        }
-#endif
-        (void)stats;
-    }
-};
-
-REGISTER_LISTENER("ptr_test_listener", 1, PtrTestListener);
-
-// =========================================================================
-// Doctest runner with protocol integration
-// =========================================================================
-
-namespace ptr_doctest {
-
-// =========================================================================
-// Runtime configuration (replaces #define-before-include macros)
-// =========================================================================
-
-/**
- * @brief Runtime configuration for the doctest test runner.
+ * Set fields before calling DOCTEST_SETUP() (or the equivalent
+ * framework entry point).
  *
- * Replaces the fragile ``#define PTR_*`` macro pattern. Macros defined
- * before including this header are silently ignored by the compiler when
- * PlatformIO compiles the library separately (COMDAT folding keeps the
- * library's version of inline functions, not the test's).
- *
- * Usage:
  * @code
- *   #define DOCTEST_CONFIG_IMPLEMENT
- *   #include <doctest.h>
- *   #include <pio_test_runner/doctest_runner.h>
- *
- *   static bool my_init(Print& log) { return true; }
- *   static void my_cleanup() { gcov_serial_dump(); }
- *
- *   void setup() {
- *       ptr_doctest::config.board_init = my_init;
- *       ptr_doctest::config.after_cycle = my_cleanup;
- *       DOCTEST_SETUP();
- *   }
- *   void loop() { DOCTEST_LOOP(); }
+ *   etst::config.board_init = my_init;
+ *   etst::config.after_cycle = my_cleanup;
+ *   etst::config.ready_timeout_ms = 5000;
  * @endcode
  */
 struct Config {
     /// Called after Serial.begin(), before tests run.
     /// Return false to halt (e.g. board detection failure).
     bool (*board_init)(Print& log) = nullptr;
-
-    /// Called after all filters applied, before context.run().
-    /// Use for runtime-derived excludes (e.g. firmware version gating).
-    void (*configure_context)(doctest::Context& ctx) = nullptr;
 
     /// Called after each test cycle completes (after ETST:DONE).
     /// Use for coverage dumps, cleanup, etc.
@@ -185,12 +105,101 @@ struct Config {
 /// Global configuration. Set fields before calling DOCTEST_SETUP().
 inline Config& config = *[]() { static Config c; return &c; }();
 
+}  // namespace etst
+
+// =========================================================================
+// Test Listener — emits markers parsed by the Python host
+// =========================================================================
+
+/**
+ * @brief Doctest reporter that prints test names and memory stats.
+ *
+ * Emits markers consumed by the embedded-test-runner Python host:
+ *   - ``ETST:CASE:START suite=... name=...`` — test timing (TestTimingTracker)
+ *   - ``ETST:MEM:BEFORE/AFTER`` — heap tracking (MemoryTracker)
+ */
+struct EtstDoctestListener : doctest::IReporter {
+    size_t free_before_{0};
+    size_t min_before_{0};
+
+    EtstDoctestListener(const doctest::ContextOptions&) {}
+
+    void report_query(const doctest::QueryData&) override {}
+    void test_run_start() override {}
+    void test_run_end(const doctest::TestRunStats&) override {}
+    void test_case_reenter(const doctest::TestCaseData&) override {}
+    void test_case_exception(const doctest::TestCaseException&) override {}
+    void subcase_start(const doctest::SubcaseSignature&) override {}
+    void subcase_end() override {}
+    void log_assert(const doctest::AssertData&) override {}
+    void log_message(const doctest::MessageData&) override {}
+    void test_case_skipped(const doctest::TestCaseData&) override {}
+
+    void test_case_start(const doctest::TestCaseData& tc) override {
+#if defined(ESP_IDF_VERSION)
+        free_before_ = esp_get_free_heap_size();
+        min_before_ = esp_get_minimum_free_heap_size();
+#endif
+        if (tc.m_timeout > 0) {
+            etst::print_test_start(tc.m_test_suite, tc.m_name, tc.m_timeout);
+        } else {
+            etst::print_test_start(tc.m_test_suite, tc.m_name);
+        }
+#if defined(ESP_IDF_VERSION)
+        etst::print_mem_before(free_before_, min_before_);
+#endif
+    }
+
+    void test_case_end(const doctest::CurrentTestCaseStats& stats) override {
+#if defined(ESP_IDF_VERSION)
+        size_t free_after = esp_get_free_heap_size();
+        size_t min_after = esp_get_minimum_free_heap_size();
+        int64_t delta = static_cast<int64_t>(free_after) - static_cast<int64_t>(free_before_);
+        etst::print_mem_after(free_after, delta, min_after);
+        if (delta < -10000) {
+            etst::print_mem_warning(-delta);
+        }
+#endif
+        (void)stats;
+    }
+};
+
+REGISTER_LISTENER("etst_doctest_listener", 1, EtstDoctestListener);
+
+// =========================================================================
+// Doctest runner with protocol integration
+// =========================================================================
+
+namespace etst::doctest {
+
+// =========================================================================
+// Doctest-specific configuration
+// =========================================================================
+
+/**
+ * @brief Doctest-specific runtime configuration.
+ *
+ * @code
+ *   etst::doctest::config.configure = [](::doctest::Context& ctx) {
+ *       ctx.setOption("test-suite-exclude", "slow*");
+ *   };
+ * @endcode
+ */
+struct Config {
+    /// Called after all filters applied, before context.run().
+    /// Use for runtime-derived excludes (e.g. firmware version gating).
+    void (*configure)(::doctest::Context& ctx) = nullptr;
+};
+
+/// Doctest-specific global configuration.
+inline Config& config = *[]() { static Config c; return &c; }();
+
 static bool tests_complete = false;
 
 /**
  * @brief Apply compile-time filter macros to a doctest context.
  */
-inline void apply_compile_time_filters(doctest::Context& ctx) {
+inline void apply_compile_time_filters(::doctest::Context& ctx) {
 #ifdef TEST_FILTER_SUITE
     ctx.setOption("test-suite", TEST_FILTER_SUITE);
     Serial.printf("Filtering test suite: %s\n", TEST_FILTER_SUITE);
@@ -221,13 +230,13 @@ inline void apply_compile_time_filters(doctest::Context& ctx) {
  */
 inline std::vector<const char*> get_test_names() {
     // Collect pointers to sort — same approach doctest uses internally
-    std::vector<const doctest::detail::TestCase*> tests;
-    for (const auto& tc : doctest::detail::getRegisteredTests()) {
+    std::vector<const ::doctest::detail::TestCase*> tests;
+    for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
         tests.push_back(&tc);
     }
     // Sort by file then line (matches doctest's fileOrderComparator)
     std::sort(tests.begin(), tests.end(),
-        [](const doctest::detail::TestCase* a, const doctest::detail::TestCase* b) {
+        [](const ::doctest::detail::TestCase* a, const ::doctest::detail::TestCase* b) {
             const int res = a->m_file.compare(b->m_file);
             if (res != 0) return res < 0;
             return a->m_line < b->m_line;
@@ -260,7 +269,7 @@ inline void list_tests() {
  * @param test_name  Exact name of the last completed test.
  * @return Number of tests skipped, or -1 if test_name not found.
  */
-inline int apply_resume_after(doctest::Context& ctx, const char* test_name) {
+inline int apply_resume_after(::doctest::Context& ctx, const char* test_name) {
     auto names = get_test_names();
     Serial.printf("RESUME_AFTER: \"%s\" (%u tests registered)\n",
                   test_name, (unsigned)names.size());
@@ -334,11 +343,11 @@ inline bool glob_match(const char* str, const char* pattern) {
  */
 inline int modify_skip(const char* pattern, bool match_suite, bool skip_value) {
     int count = 0;
-    for (auto& tc : doctest::detail::getRegisteredTests()) {
+    for (auto& tc : ::doctest::detail::getRegisteredTests()) {
         const char* name = match_suite ? tc.m_test_suite : tc.m_name;
         if (name && glob_match(name, pattern)) {
             // m_skip is not part of set ordering — safe to modify via const_cast
-            const_cast<doctest::detail::TestCase&>(tc).m_skip = skip_value;
+            const_cast<::doctest::detail::TestCase&>(tc).m_skip = skip_value;
             count++;
         }
     }
@@ -346,9 +355,9 @@ inline int modify_skip(const char* pattern, bool match_suite, bool skip_value) {
 }
 
 /**
- * @brief Extract and apply PTR-specific flags from args, return remaining args.
+ * @brief Extract and apply ETST-specific flags from args, return remaining args.
  *
- * PTR-specific flags modify the test registry (m_skip) and are removed
+ * ETST-specific flags modify the test registry (m_skip) and are removed
  * from the argument list before passing to doctest's applyCommandLine.
  *
  * Supported flags:
@@ -357,10 +366,10 @@ inline int modify_skip(const char* pattern, bool match_suite, bool skip_value) {
  *   --skip-tc <pattern>    Set m_skip on matching test cases
  *   --skip-ts <pattern>    Set m_skip on matching test suites
  *
- * @param args  Argument list (modified in place — PTR flags removed).
+ * @param args  Argument list (modified in place — ETST flags removed).
  */
-inline void extract_ptr_flags(std::vector<String>& args) {
-    struct { const char* flag; bool match_suite; bool skip_value; } ptr_flags[] = {
+inline void extract_etst_flags(std::vector<String>& args) {
+    struct { const char* flag; bool match_suite; bool skip_value; } etst_flags[] = {
         {"--unskip-tc", false, false},
         {"--unskip-ts", true,  false},
         {"--skip-tc",   false, true},
@@ -372,17 +381,17 @@ inline void extract_ptr_flags(std::vector<String>& args) {
     for (size_t i = 0; i < args.size(); ) {
         // --wake: Phase 2 after deep sleep (no value, just a flag)
         if (args[i] == "--wake") {
-            pio_test_runner::_ptr_is_wake_cycle = true;
+            etst::_etst_is_wake_cycle = true;
             args.erase(args.begin() + i);
             continue;
         }
         bool matched = false;
-        for (auto& pf : ptr_flags) {
-            if (args[i] == pf.flag && i + 1 < args.size()) {
+        for (auto& ef : etst_flags) {
+            if (args[i] == ef.flag && i + 1 < args.size()) {
                 const char* pattern = args[i + 1].c_str();
-                int count = modify_skip(pattern, pf.match_suite, pf.skip_value);
+                int count = modify_skip(pattern, ef.match_suite, ef.skip_value);
                 Serial.printf("Runner %s %s: %d test%s modified\n",
-                              pf.flag, pattern, count, count == 1 ? "" : "s");
+                              ef.flag, pattern, count, count == 1 ? "" : "s");
                 args.erase(args.begin() + i, args.begin() + i + 2);
                 matched = true;
                 break;
@@ -435,10 +444,10 @@ inline std::vector<String> tokenize_args(const String& body) {
  * and prepends a dummy program name at argv[0].
  *
  * Examples:
- *   ["--tc", "*foo*"]           → ["test", "--tc=*foo*"]
- *   ["--no-skip"]               → ["test", "--no-skip"]
- *   ["--tc", "*a*", "--ts", "*b*"] → ["test", "--tc=*a*", "--ts=*b*"]
- *   ["--tc=*foo*"]              → ["test", "--tc=*foo*"]  (already joined)
+ *   ["--tc", "*foo*"]           -> ["test", "--tc=*foo*"]
+ *   ["--no-skip"]               -> ["test", "--no-skip"]
+ *   ["--tc", "*a*", "--ts", "*b*"] -> ["test", "--tc=*a*", "--ts=*b*"]
+ *   ["--tc=*foo*"]              -> ["test", "--tc=*foo*"]  (already joined)
  */
 inline std::vector<String> build_doctest_argv(const std::vector<String>& args) {
     std::vector<String> result;
@@ -446,7 +455,7 @@ inline std::vector<String> build_doctest_argv(const std::vector<String>& args) {
     for (size_t i = 0; i < args.size(); i++) {
         if (args[i].startsWith("--") && i + 1 < args.size()
                 && !args[i + 1].startsWith("--")) {
-            // Join --flag value → --flag=value
+            // Join --flag value -> --flag=value
             String combined;
             combined += args[i].c_str();
             combined += "=";
@@ -501,7 +510,7 @@ inline FilterState& active_filters() {
 inline unsigned count_passing_filters() {
     auto& f = active_filters();
     unsigned count = 0;
-    for (auto& tc : doctest::detail::getRegisteredTests()) {
+    for (auto& tc : ::doctest::detail::getRegisteredTests()) {
         bool skip = false;
         if (tc.m_skip && !f.no_skip) skip = true;
         if (!matches_any(tc.m_test_suite, f.ts, true)) skip = true;
@@ -517,7 +526,7 @@ inline unsigned count_passing_filters() {
  * @brief Parse and apply filter flags from a RUN: command body.
  *
  * Two-phase processing:
- * 1. Extract PTR-specific flags (--unskip-tc, --skip-tc, etc.) and
+ * 1. Extract ETST-specific flags (--unskip-tc, --skip-tc, etc.) and
  *    apply them to the test registry (modify m_skip).
  * 2. Pass remaining flags to doctest's applyCommandLine(), which
  *    handles all native flags: --tc, --ts, --tce, --tse, --no-skip,
@@ -526,7 +535,7 @@ inline unsigned count_passing_filters() {
  * If no flags are present, the body is treated as a bare test-case
  * pattern for backwards compatibility (e.g. "RUN: *foo*").
  */
-inline void apply_run_filters(doctest::Context& ctx, const String& body) {
+inline void apply_run_filters(::doctest::Context& ctx, const String& body) {
     auto args = tokenize_args(body);
     auto& filters = active_filters();
 
@@ -538,8 +547,8 @@ inline void apply_run_filters(doctest::Context& ctx, const String& body) {
         return;
     }
 
-    // Phase 1: extract and apply PTR-specific flags (modifies registry)
-    extract_ptr_flags(args);
+    // Phase 1: extract and apply ETST-specific flags (modifies registry)
+    extract_etst_flags(args);
 
     // Phase 2: pass remaining flags to doctest's native parser.
     if (!args.empty()) {
@@ -591,7 +600,7 @@ struct RunCommand {
     int skip_count = 0;  // tests skipped by RESUME_AFTER
 };
 
-inline RunCommand apply_runner_command(doctest::Context& ctx, const String& command) {
+inline RunCommand apply_runner_command(::doctest::Context& ctx, const String& command) {
     if (command.startsWith("RUN:")) {
         String filter = command.substring(4);
         filter.trim();
@@ -653,7 +662,7 @@ inline String wait_for_command(uint32_t timeout_ms) {
     uint32_t next_ready = 0;  // send immediately on first iteration
     while (wait_forever || millis() < deadline) {
         if (millis() >= next_ready) {
-            pio_test_runner::signal_ready();
+            etst::signal_ready();
             next_ready = millis() + READY_INTERVAL_MS;
         }
         if (Serial.available()) {
@@ -672,18 +681,18 @@ inline String wait_for_command(uint32_t timeout_ms) {
                 }
 
                 // Validate CRC at the transport layer
-                char buf[pio_test_runner::MAX_LINE_LEN];
+                char buf[etst::MAX_LINE_LEN];
                 size_t len = raw.length();
                 if (len >= sizeof(buf)) len = sizeof(buf) - 1;
                 memcpy(buf, raw.c_str(), len);
                 buf[len] = '\0';
 
-                auto result = pio_test_runner::validate_crc(buf, len);
+                auto result = etst::validate_crc(buf, len);
                 if (result.valid) {
                     return String(result.content);
                 }
                 // CRC failed — log and discard
-                pio_test_runner::log_crc_failure(Serial, raw.c_str(), raw.length());
+                etst::log_crc_failure(Serial, raw.c_str(), raw.length());
             }
         }
         delay(10);
@@ -698,7 +707,7 @@ inline String wait_for_command(uint32_t timeout_ms) {
  * filters, executes matching tests, and signals ETST:DONE.
  */
 inline void run_cycle(const String& command) {
-    doctest::Context context;
+    ::doctest::Context context;
     context.setOption("success", true);
     context.setOption("no-exitcode", true);
     apply_compile_time_filters(context);
@@ -707,8 +716,8 @@ inline void run_cycle(const String& command) {
     active_filters().clear();
     auto cmd = apply_runner_command(context, command);
 
-    if (config.configure_context) {
-        config.configure_context(context);
+    if (config.configure) {
+        config.configure(context);
     }
 
     if (cmd.should_run) {
@@ -720,7 +729,7 @@ inline void run_cycle(const String& command) {
             run -= static_cast<unsigned>(cmd.skip_count);
         }
         unsigned skip = total - run;
-        pio_test_runner::print_test_count(total, skip, run);
+        etst::print_test_count(total, skip, run);
 
         try {
             int result = context.run();
@@ -732,13 +741,13 @@ inline void run_cycle(const String& command) {
 
     // Clear the wake flag so subsequent tests in RESUME_AFTER cycles
     // see is_test_wake()==false.
-    pio_test_runner::clear_test_wake();
+    etst::clear_test_wake();
 
-    if (config.after_cycle) {
-        config.after_cycle();
+    if (etst::config.after_cycle) {
+        etst::config.after_cycle();
     }
 
-    pio_test_runner::signal_done();
+    etst::signal_done();
 }
 
 /**
@@ -748,7 +757,7 @@ inline void run_cycle(const String& command) {
  * READY/RUN/DONE cycle. After completion, idle_loop() accepts
  * additional commands for RESUME_AFTER cycles.
  *
- * Set callbacks on ptr_doctest::config before calling this.
+ * Set callbacks on etst::config before calling this.
  */
 inline void run_tests() {
     Serial.begin(115200);
@@ -760,14 +769,14 @@ inline void run_tests() {
     delay(4000);
 #endif
 
-    if (config.board_init) {
-        if (!config.board_init(Serial)) {
+    if (etst::config.board_init) {
+        if (!etst::config.board_init(Serial)) {
             Serial.println("FATAL: Board init failed - halting tests");
             while (true) { delay(1000); }
         }
     }
 
-    String command = wait_for_command(config.ready_timeout_ms);
+    String command = wait_for_command(etst::config.ready_timeout_ms);
     run_cycle(command);
     tests_complete = true;
 }
@@ -797,31 +806,31 @@ inline void idle_loop() {
         }
 
         if (command == "RESTART") {
-            Serial.println("[PTR] Restarting...");
+            Serial.println("[ETST] Restarting...");
             Serial.flush();
             delay(100);
-            if (config.platform_restart) {
-                config.platform_restart();
+            if (etst::config.platform_restart) {
+                etst::config.platform_restart();
             }
 #if defined(ESP_IDF_VERSION)
             else { esp_restart(); }
 #endif
         } else if (command == "SLEEP") {
-            Serial.println("[PTR] Entering deep sleep...");
+            Serial.println("[ETST] Entering deep sleep...");
             Serial.flush();
             delay(100);
-            if (config.platform_sleep) {
-                config.platform_sleep();
+            if (etst::config.platform_sleep) {
+                etst::config.platform_sleep();
             }
 #if defined(ESP_IDF_VERSION)
             else { esp_deep_sleep_start(); }
 #endif
         } else if (command == "LIGHTSLEEP") {
-            Serial.println("[PTR] Entering light sleep...");
+            Serial.println("[ETST] Entering light sleep...");
             Serial.flush();
             delay(100);
-            if (config.platform_lightsleep) {
-                config.platform_lightsleep();
+            if (etst::config.platform_lightsleep) {
+                etst::config.platform_lightsleep();
             }
 #if defined(ESP_IDF_VERSION)
             else {
@@ -829,9 +838,9 @@ inline void idle_loop() {
                 esp_light_sleep_start();
             }
 #endif
-            Serial.println("[PTR] Woke from light sleep");
+            Serial.println("[ETST] Woke from light sleep");
         } else if (command == "WAIT") {
-            Serial.println("[PTR] Waiting (idle, no sleep)...");
+            Serial.println("[ETST] Waiting (idle, no sleep)...");
         } else {
             // LIST, RUN:, or other commands
             run_cycle(command);
@@ -839,8 +848,8 @@ inline void idle_loop() {
     }
 }
 
-}  // namespace ptr_doctest
+}  // namespace etst::doctest
 
 // Convenience macros
-#define DOCTEST_SETUP() ptr_doctest::run_tests()
-#define DOCTEST_LOOP()  ptr_doctest::idle_loop()
+#define DOCTEST_SETUP() etst::doctest::run_tests()
+#define DOCTEST_LOOP()  etst::doctest::idle_loop()

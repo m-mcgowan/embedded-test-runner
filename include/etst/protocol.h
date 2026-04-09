@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file protocol.h
-/// @brief Shared protocol primitives for pio-test-runner wire format.
+/// @brief Shared protocol primitives for embedded-test-runner wire format.
 ///
 /// All protocol lines use the format:
 ///     ETST:<TAG>[:<SUBTAG>] [payload ...] *XX
@@ -35,7 +35,7 @@ struct Print {
 };
 #endif
 
-namespace pio_test_runner {
+namespace etst {
 
 /// Maximum protocol line length (before \n).
 /// Lines longer than this are truncated — keep payloads concise.
@@ -161,7 +161,7 @@ inline ValidatedLine validate_crc(char* buf, size_t len) {
 /// @param len  Length of raw
 inline void log_crc_failure(Print& out, const char* raw, size_t len) {
     char hex[96];
-    int n = snprintf(hex, sizeof(hex), "[PTR] CRC fail (%zu bytes): ", len);
+    int n = snprintf(hex, sizeof(hex), "[ETST] CRC fail (%zu bytes): ", len);
     for (size_t i = 0; i < len && n < static_cast<int>(sizeof(hex)) - 4; i++) {
         n += snprintf(hex + n, sizeof(hex) - n, "%02X ",
                       static_cast<uint8_t>(raw[i]));
@@ -171,4 +171,4 @@ inline void log_crc_failure(Print& out, const char* raw, size_t len) {
     out.write(reinterpret_cast<const uint8_t*>("\n"), 1);
 }
 
-}  // namespace pio_test_runner
+}  // namespace etst
