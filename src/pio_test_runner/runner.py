@@ -152,6 +152,11 @@ class EmbeddedTestRunner(_BaseRunner):
         self._port_path = None  # persists across serial open/close for sleep monitoring
         self._line_buf = ""  # partial line buffer for serial reads
 
+        # Hang detection for line callback mode (PIO owns serial).
+        # Tracks the last time we received output to detect silent hangs.
+        self._last_line_time: float = 0.0
+        self._line_mode_test_started = False
+
     # ------------------------------------------------------------------
     # Configuration hooks (override in subclass)
     # ------------------------------------------------------------------
@@ -201,15 +206,47 @@ class EmbeddedTestRunner(_BaseRunner):
         PIO owns serial and handles echoing + result parsing.
         We feed our receivers for crash detection, disconnect handling,
         memory tracking, timing, and assertion failure tracking.
+
+        Also checks for silent hangs: if the gap since the last line
+        exceeds the hang timeout, reports an error.
         """
         if self._finished_by_runner:
             return
+
+        now = time.time()
+
+        # Detect silent hangs — gap between lines exceeds timeout
+        if (self._line_mode_test_started
+                and self._last_line_time > 0
+                and not self.protocol.is_busy):
+            elapsed = now - self._last_line_time
+            timeout = self._effective_hang_timeout()
+            if elapsed > timeout:
+                test_name = self.protocol.current_test_full or "unknown"
+                _secho(
+                    f"\nHANG DETECTED: No output for {int(elapsed)}s — aborting",
+                    fg="red", err=True,
+                )
+                self._add_error_case(
+                    test_name,
+                    f"Test hang: no output for {int(elapsed)}s",
+                    RuntimeError(f"Test hang: no output for {int(elapsed)}s"),
+                )
+                self._finished_by_runner = True
+                self.test_suite.on_finish()
+                return
+
+        self._last_line_time = now
 
         prev_state = self.protocol.state
         self.router.feed(line)
         self._sync_test_name()
         self._check_crash()
         self._check_assertion_failure(line)
+
+        # Track when tests actually start (avoid false hangs during boot)
+        if self.protocol.state == ProtocolState.RUNNING and not self._line_mode_test_started:
+            self._line_mode_test_started = True
 
         # Report failures when ETST:DONE transitions to FINISHED
         if self.protocol.state == ProtocolState.FINISHED and prev_state != ProtocolState.FINISHED:

@@ -151,6 +151,69 @@ class TestHangTimeout:
         assert runner._effective_hang_timeout() == 15.0
 
 
+class TestLineCallbackHangDetection:
+    """Hang detection in line callback mode (PIO owns serial).
+
+    Bug: on_testing_line_output() has no hang detection. When PIO owns
+    the serial port and calls on_testing_line_output() for each line,
+    a silent hang blocks until PIO's overall timeout (minutes), not the
+    runner's 30s hang timeout. See BUG_hang_detector_inactive_in_pio_mode.md.
+    """
+
+    def test_hang_detected_after_silence(self, monkeypatch):
+        """If no output arrives for longer than the hang timeout,
+        the runner should detect and report the hang."""
+        monkeypatch.setenv("PTR_HANG_TIMEOUT", "0.1")  # 100ms
+        runner = make_runner()
+
+        # Simulate a test starting
+        runner.on_testing_line_output(_crc("ETST:READY") + "\n")
+        runner.protocol.command_sent()
+        runner.on_testing_line_output(
+            _crc('ETST:TEST:START suite="Suite" name="hangs"') + "\n"
+        )
+
+        # Wait longer than the hang timeout
+        time.sleep(0.2)
+
+        # Feed another line — runner should notice the gap
+        runner.on_testing_line_output("some output after silence\n")
+
+        # The hang should have been detected
+        errored = [
+            c for c in runner.test_suite.cases
+            if c.status == MockTestStatus.ERRORED
+        ]
+        assert len(errored) == 1, \
+            f"Expected hang detection, got cases: {runner.test_suite.cases}"
+        assert "hang" in errored[0].message.lower()
+
+    def test_no_false_hang_with_continuous_output(self, monkeypatch):
+        """Continuous output within the timeout should not trigger hang."""
+        monkeypatch.setenv("PTR_HANG_TIMEOUT", "0.5")
+        runner = make_runner()
+
+        runner.on_testing_line_output(_crc("ETST:READY") + "\n")
+        runner.protocol.command_sent()
+        runner.on_testing_line_output(
+            _crc('ETST:TEST:START suite="Suite" name="fast"') + "\n"
+        )
+
+        # Rapid output — no hang
+        for i in range(5):
+            runner.on_testing_line_output(f"progress {i}\n")
+            time.sleep(0.05)
+
+        runner.on_testing_line_output(_crc("ETST:DONE") + "\n")
+
+        errored = [
+            c for c in runner.test_suite.cases
+            if c.status == MockTestStatus.ERRORED
+        ]
+        assert len(errored) == 0, \
+            f"False hang detection: {errored}"
+
+
 class TestProgramArgs:
     def test_no_args_returns_run_all(self):
         runner = make_runner()
