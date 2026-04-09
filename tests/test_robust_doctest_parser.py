@@ -1,6 +1,6 @@
 """Tests for RobustDoctestParser."""
 
-from pio_test_runner.robust_doctest_parser import RobustDoctestParser
+from etst.robust_doctest_parser import RobustDoctestParser
 
 
 class TestRobustDoctestParser:

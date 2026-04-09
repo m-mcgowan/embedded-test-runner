@@ -5,8 +5,8 @@ import time
 
 import serial as pyserial
 
-from pio_test_runner.protocol import format_crc
-from pio_test_runner.serial_port import open_serial
+from etst.protocol import format_crc
+from etst.serial_port import open_serial
 
 
 def open_device(port, baud=115200, retries=10):

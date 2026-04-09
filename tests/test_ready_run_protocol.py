@@ -1,7 +1,7 @@
 """Tests for ReadyRunProtocol."""
 
-from pio_test_runner.protocol import format_crc
-from pio_test_runner.ready_run_protocol import ProtocolState, ReadyRunProtocol
+from etst.protocol import format_crc
+from etst.ready_run_protocol import ProtocolState, ReadyRunProtocol
 
 
 def _crc(content: str) -> str:

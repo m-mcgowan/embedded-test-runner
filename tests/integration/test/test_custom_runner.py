@@ -25,7 +25,7 @@ for pattern in [
         if p not in sys.path:
             sys.path.insert(0, p)
 
-from pio_test_runner.runner import EmbeddedTestRunner  # noqa: E402
+from etst.runner import EmbeddedTestRunner  # noqa: E402
 
 
 class CustomTestRunner(EmbeddedTestRunner):

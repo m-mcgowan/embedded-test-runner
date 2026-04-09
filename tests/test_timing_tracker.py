@@ -1,7 +1,7 @@
 """Tests for TestTimingTracker."""
 
-from pio_test_runner.protocol import format_crc
-from pio_test_runner.timing_tracker import TestTimingTracker
+from etst.protocol import format_crc
+from etst.timing_tracker import TestTimingTracker
 
 
 def _crc(content: str) -> str:

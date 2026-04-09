@@ -29,12 +29,12 @@
 #include <doctest.h>
 #include <Arduino.h>
 #include <esp_sleep.h>
-#include <pio_test_runner/test_runner.h>
+#include <etst/test_runner.h>
 
 TEST_SUITE("DeepSleep") {
 
 TEST_CASE("survives deep sleep" * doctest::timeout(30)) {
-    if (pio_test_runner::is_test_wake()) {
+    if (etst::is_test_wake()) {
         // Phase 2: woke from timer
         auto cause = esp_sleep_get_wakeup_cause();
         Serial.printf("Phase 2: woke with cause=%d\n", (int)cause);
@@ -44,7 +44,7 @@ TEST_CASE("survives deep sleep" * doctest::timeout(30)) {
         Serial.println("Phase 1: entering deep sleep for 3s");
         CHECK(true);
 
-        pio_test_runner::signal_sleep(3000);
+        etst::signal_sleep(3000);
         Serial.flush();
         delay(100);
 
@@ -55,7 +55,7 @@ TEST_CASE("survives deep sleep" * doctest::timeout(30)) {
 }
 
 TEST_CASE("second sleep test" * doctest::timeout(30)) {
-    if (pio_test_runner::is_test_wake()) {
+    if (etst::is_test_wake()) {
         // Phase 2: verify wake
         auto cause = esp_sleep_get_wakeup_cause();
         Serial.printf("Second sleep: Phase 2 — woke with cause=%d\n", (int)cause);
@@ -65,7 +65,7 @@ TEST_CASE("second sleep test" * doctest::timeout(30)) {
         Serial.println("Second sleep: Phase 1 — entering deep sleep for 2s");
         CHECK(true);
 
-        pio_test_runner::signal_sleep(2000);
+        etst::signal_sleep(2000);
         Serial.flush();
         delay(100);
 

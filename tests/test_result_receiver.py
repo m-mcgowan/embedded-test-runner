@@ -2,7 +2,7 @@
 
 from embedded_bridge.receivers.base import Receiver
 
-from pio_test_runner.result_receiver import TestResult, TestResultReceiver
+from etst.result_receiver import TestResult, TestResultReceiver
 
 
 class TestDoctestParsing:

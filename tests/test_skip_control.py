@@ -4,7 +4,7 @@ import os
 from unittest.mock import patch
 
 from conftest import MockProjectConfig, MockTestRunnerOptions, MockTestSuite
-from pio_test_runner.runner import EmbeddedTestRunner
+from etst.runner import EmbeddedTestRunner
 
 
 def make_runner(**kwargs):
