@@ -6,16 +6,16 @@
 #endif
 #include "etst/protocol.h"
 
-/// @brief PlatformIO test runner protocol — firmware-side API.
+/// @brief Embedded test runner protocol — firmware-side API.
 ///
 /// All protocol lines use the ETST: prefix with CRC-8 checksum.
 /// See protocol.h for wire format details.
 ///
 /// @code
-/// #include <pio_test_runner/test_runner.h>
+/// #include <etst/test_runner.h>
 /// @endcode
 
-namespace pio_test_runner {
+namespace etst {
 
 // =====================================================================
 // Disconnect protocol
@@ -87,7 +87,7 @@ inline void signal_restart() {
 
 /// Set by --wake flag in RUN: command (Phase 2 after sleep).
 /// Defined in doctest_runner.h. No RTC memory needed.
-extern bool _ptr_is_wake_cycle;
+extern bool _etst_is_wake_cycle;
 
 /// Check if this test cycle is a Phase 2 wake from deep sleep.
 ///
@@ -100,23 +100,23 @@ extern bool _ptr_is_wake_cycle;
 ///
 /// @code
 /// TEST_CASE("survives deep sleep") {
-///     if (pio_test_runner::is_test_wake()) {
+///     if (etst::is_test_wake()) {
 ///         // Phase 2: verify post-sleep state
 ///     } else {
 ///         // Phase 1: setup, then sleep
-///         pio_test_runner::signal_sleep(3000);
+///         etst::signal_sleep(3000);
 ///         esp_sleep_enable_timer_wakeup(3000000);
 ///         esp_deep_sleep_start();
 ///     }
 /// }
 /// @endcode
 inline bool is_test_wake() {
-    return _ptr_is_wake_cycle;
+    return _etst_is_wake_cycle;
 }
 
 /// Clear the wake flag. Called by run_cycle() after each test cycle.
 inline void clear_test_wake() {
-    _ptr_is_wake_cycle = false;
+    _etst_is_wake_cycle = false;
 }
 
 // =====================================================================
@@ -165,4 +165,4 @@ inline void print_test_start(const char* suite, const char* name, float timeout_
          suite, name, timeout_s);
 }
 
-}  // namespace pio_test_runner
+}  // namespace etst
