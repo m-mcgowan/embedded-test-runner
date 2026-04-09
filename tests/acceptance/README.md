@@ -17,15 +17,15 @@ tests/acceptance/run.sh "1.9"
 # Filter to specific tests:
 tests/acceptance/run.sh "1.9" -k "unskip"
 
-# Manual: flash with PTR_POST_TEST=restart so device stays awake:
+# Manual: flash with ETST_POST_TEST=restart so device stays awake:
 PORT=$(usb-device port "1.9")
-PTR_POST_TEST=restart pio test -e esp32s3 \
+ETST_POST_TEST=restart pio test -e esp32s3 \
     --upload-port $PORT --test-port $PORT \
     -d tests/integration
 pytest tests/acceptance/ -v --port $PORT --ignore=tests/acceptance/test_sleep.py
 ```
 
-**Important:** Use `PTR_POST_TEST=restart` when flashing. The default
+**Important:** Use `ETST_POST_TEST=restart` when flashing. The default
 `SLEEP` puts the device into deep sleep after tests, making the port
 disappear. `restart` reboots the device so it's immediately available
 for acceptance tests.
@@ -51,14 +51,14 @@ for acceptance tests.
 
 | Feature | Test file | What's validated |
 |---------|-----------|-----------------|
-| `PTR_TEST_SUITE` env var | test_env_vars.py | Suite filter via env → correct tests run |
-| `PTR_TEST_CASE` env var | test_env_vars.py | Case filter via env |
-| `PTR_TEST_CASE_EXCLUDE` env var | test_env_vars.py | Case exclusion via env |
-| `PTR_TEST_SUITE_EXCLUDE` env var | test_env_vars.py | Suite exclusion via env |
-| `PTR_UNSKIP_TEST_CASE` env var | test_env_vars.py | Selective unskip via env |
-| `PTR_UNSKIP_TEST_SUITE` env var | test_env_vars.py | Suite unskip via env |
-| `PTR_SKIP_TEST_CASE` env var | test_env_vars.py | Force-skip via env |
-| `PTR_NO_SKIP` env var | test_env_vars.py | Global unskip via env |
+| `ETST_TEST_SUITE` env var | test_env_vars.py | Suite filter via env → correct tests run |
+| `ETST_TEST_CASE` env var | test_env_vars.py | Case filter via env |
+| `ETST_TEST_CASE_EXCLUDE` env var | test_env_vars.py | Case exclusion via env |
+| `ETST_TEST_SUITE_EXCLUDE` env var | test_env_vars.py | Suite exclusion via env |
+| `ETST_UNSKIP_TEST_CASE` env var | test_env_vars.py | Selective unskip via env |
+| `ETST_UNSKIP_TEST_SUITE` env var | test_env_vars.py | Suite unskip via env |
+| `ETST_SKIP_TEST_CASE` env var | test_env_vars.py | Force-skip via env |
+| `ETST_NO_SKIP` env var | test_env_vars.py | Global unskip via env |
 | `pio test -a "..."` args | test_env_vars.py | Flags passed through to device |
 | `-a` combined with env vars | test_env_vars.py | Both sources compose correctly |
 

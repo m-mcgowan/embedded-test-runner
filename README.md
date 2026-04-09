@@ -45,22 +45,22 @@ pio test -e my_board -a '--ts *Network*' -a '--tce *stress*'
 Alternatively, set environment variables (no quoting issues — the shell doesn't expand inside variable values):
 
 ```bash
-PTR_TEST_SUITE='*SensorTests*' pio test -e my_board
+ETST_TEST_SUITE='*SensorTests*' pio test -e my_board
 ```
 
 ### Supported filters
 
 | Flag | Env var | Description |
 |------|---------|-------------|
-| `--ts` | `PTR_TEST_SUITE` | Run only suites matching pattern |
-| `--tc` | `PTR_TEST_CASE` | Run only cases matching pattern |
-| `--tse` | `PTR_TEST_SUITE_EXCLUDE` | Exclude suites matching pattern |
-| `--tce` | `PTR_TEST_CASE_EXCLUDE` | Exclude cases matching pattern |
-| `--no-skip` | `PTR_NO_SKIP` | Run all tests including `skip()`-decorated ones |
-| `--unskip-tc` | `PTR_UNSKIP_TEST_CASE` | Clear `skip()` on matching test cases |
-| `--unskip-ts` | `PTR_UNSKIP_TEST_SUITE` | Clear `skip()` on matching test suites |
-| `--skip-tc` | `PTR_SKIP_TEST_CASE` | Force-skip matching test cases |
-| `--skip-ts` | `PTR_SKIP_TEST_SUITE` | Force-skip matching test suites |
+| `--ts` | `ETST_TEST_SUITE` | Run only suites matching pattern |
+| `--tc` | `ETST_TEST_CASE` | Run only cases matching pattern |
+| `--tse` | `ETST_TEST_SUITE_EXCLUDE` | Exclude suites matching pattern |
+| `--tce` | `ETST_TEST_CASE_EXCLUDE` | Exclude cases matching pattern |
+| `--no-skip` | `ETST_NO_SKIP` | Run all tests including `skip()`-decorated ones |
+| `--unskip-tc` | `ETST_UNSKIP_TEST_CASE` | Clear `skip()` on matching test cases |
+| `--unskip-ts` | `ETST_UNSKIP_TEST_SUITE` | Clear `skip()` on matching test suites |
+| `--skip-tc` | `ETST_SKIP_TEST_CASE` | Force-skip matching test cases |
+| `--skip-ts` | `ETST_SKIP_TEST_SUITE` | Force-skip matching test suites |
 
 Patterns support `*` wildcards (doctest globbing). Filters from `-a` and environment variables are combined. All doctest native flags (`--no-skip`, comma-separated patterns, etc.) are passed through via `applyCommandLine()`.
 
@@ -76,11 +76,11 @@ Tests decorated with `doctest::skip()` are skipped by default. Use `--unskip-tc`
 
 ```bash
 # Run a specific skip-decorated crash test
-PTR_UNSKIP_TEST_CASE="*TWDT*fires*" PTR_TEST_SUITE="*Service/WDT*" \
+ETST_UNSKIP_TEST_CASE="*TWDT*fires*" ETST_TEST_SUITE="*Service/WDT*" \
     pio test -e my_board
 
 # Force-skip slow tests without modifying source
-PTR_SKIP_TEST_CASE="*stress*" pio test -e my_board
+ETST_SKIP_TEST_CASE="*stress*" pio test -e my_board
 
 # Unskip via -a flag
 pio test -e my_board -a "--unskip-tc *crash_test*" -a "--ts *WDT*"
@@ -131,8 +131,8 @@ void loop()  { DOCTEST_LOOP(); }
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `PTR_POST_TEST` | `sleep`, `lightsleep`, `restart`, `wait`, `none` | `sleep` | Command sent after tests complete. `sleep` = deep sleep (saves battery, port disappears). `lightsleep` = light sleep (low power, port stays alive). `restart` = reboot (immediately available). `wait` = idle loop (fully active). `none` = close without command. |
-| `PTR_RESUME_AFTER` | test name | none | Skip all tests up to and including the named test, then run the rest. Useful for resuming after a failure. Combines with filters (`PTR_TEST_SUITE`, etc.) which apply to the remaining tests. |
+| `ETST_POST_TEST` | `sleep`, `lightsleep`, `restart`, `wait`, `none` | `sleep` | Command sent after tests complete. `sleep` = deep sleep (saves battery, port disappears). `lightsleep` = light sleep (low power, port stays alive). `restart` = reboot (immediately available). `wait` = idle loop (fully active). `none` = close without command. |
+| `ETST_RESUME_AFTER` | test name | none | Skip all tests up to and including the named test, then run the rest. Useful for resuming after a failure. Combines with filters (`ETST_TEST_SUITE`, etc.) which apply to the remaining tests. |
 
 ## Writing Deep Sleep Tests
 

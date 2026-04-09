@@ -124,7 +124,7 @@ class TestHangTimeout:
         assert runner.configure_hang_timeout() == 30.0
 
     def test_hang_timeout_from_env(self, monkeypatch):
-        monkeypatch.setenv("PTR_HANG_TIMEOUT", "120")
+        monkeypatch.setenv("ETST_HANG_TIMEOUT", "120")
         runner = make_runner()
         assert runner.configure_hang_timeout() == 120.0
 
@@ -139,13 +139,13 @@ class TestHangTimeout:
         assert runner._effective_hang_timeout() == 30.0
 
     def test_effective_timeout_env_override(self, monkeypatch):
-        monkeypatch.setenv("PTR_HANG_TIMEOUT", "90")
+        monkeypatch.setenv("ETST_HANG_TIMEOUT", "90")
         runner = make_runner()
         runner.protocol._current_test_timeout = 0
         assert runner._effective_hang_timeout() == 90.0
 
     def test_per_test_overrides_env(self, monkeypatch):
-        monkeypatch.setenv("PTR_HANG_TIMEOUT", "90")
+        monkeypatch.setenv("ETST_HANG_TIMEOUT", "90")
         runner = make_runner()
         runner.protocol._current_test_timeout = 15
         assert runner._effective_hang_timeout() == 15.0
@@ -163,7 +163,7 @@ class TestLineCallbackHangDetection:
     def test_hang_detected_after_silence(self, monkeypatch):
         """If no output arrives for longer than the hang timeout,
         the runner should detect and report the hang."""
-        monkeypatch.setenv("PTR_HANG_TIMEOUT", "0.1")  # 100ms
+        monkeypatch.setenv("ETST_HANG_TIMEOUT", "0.1")  # 100ms
         runner = make_runner()
 
         # Simulate a test starting
@@ -190,7 +190,7 @@ class TestLineCallbackHangDetection:
 
     def test_no_false_hang_with_continuous_output(self, monkeypatch):
         """Continuous output within the timeout should not trigger hang."""
-        monkeypatch.setenv("PTR_HANG_TIMEOUT", "0.5")
+        monkeypatch.setenv("ETST_HANG_TIMEOUT", "0.5")
         runner = make_runner()
 
         runner.on_testing_line_output(_crc("ETST:READY") + "\n")
@@ -229,7 +229,7 @@ class TestProgramArgs:
         assert "*BHI385*" in cmd
 
     def test_program_args_combined_with_env(self, monkeypatch):
-        monkeypatch.setenv("PTR_TEST_CASE", "*watermark*")
+        monkeypatch.setenv("ETST_TEST_CASE", "*watermark*")
         opts = MockTestRunnerOptions()
         opts.program_args = ["--ts", "*BHI385*"]
         runner = make_runner(options=opts)
@@ -245,7 +245,7 @@ class TestProgramArgs:
         assert "--ts *Suite*" in cmd
 
     def test_env_only(self, monkeypatch):
-        monkeypatch.setenv("PTR_TEST_SUITE", "*GPS*")
+        monkeypatch.setenv("ETST_TEST_SUITE", "*GPS*")
         runner = make_runner()
         cmd = runner._build_initial_command()
         assert cmd == "RUN: --ts *GPS*"

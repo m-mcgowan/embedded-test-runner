@@ -50,6 +50,26 @@ from .timing_tracker import TestTimingTracker
 
 logger = logging.getLogger(__name__)
 
+_deprecated_env_warned: set[str] = set()
+
+
+def _env(new_name: str, old_name: str, default: str = "") -> str:
+    """Read an environment variable, accepting both new (ETST_*) and old (PTR_*) names.
+
+    Checks the new name first. Falls back to the old name with a
+    deprecation warning (once per variable).
+    """
+    value = os.environ.get(new_name, "").strip()
+    if value:
+        return value
+    value = os.environ.get(old_name, "").strip()
+    if value and old_name not in _deprecated_env_warned:
+        _deprecated_env_warned.add(old_name)
+        logger.warning(
+            "%s is deprecated, use %s instead", old_name, new_name
+        )
+    return value or default
+
 # Import PIO classes — available at runtime when used as a PIO plugin.
 # Tests mock these.
 try:
@@ -177,10 +197,10 @@ class EmbeddedTestRunner(_BaseRunner):
     def configure_hang_timeout(self) -> float:
         """Default seconds without output before declaring a hang.
 
-        Override in subclass, or set PTR_HANG_TIMEOUT env var (seconds).
+        Override in subclass, or set ETST_HANG_TIMEOUT env var (seconds).
         Per-test doctest::timeout(N) annotations take precedence when present.
         """
-        env_val = os.environ.get("PTR_HANG_TIMEOUT", "").strip()
+        env_val = _env("ETST_HANG_TIMEOUT", "PTR_HANG_TIMEOUT")
         if env_val:
             return float(env_val)
         return 30.0
@@ -274,10 +294,10 @@ class EmbeddedTestRunner(_BaseRunner):
            flags as doctest: --tc, --ts, --tce, --tse.
 
         2. Environment variables:
-           PTR_TEST_CASE=*pattern*       → --tc (test-case filter)
-           PTR_TEST_SUITE=*pattern*      → --ts (test-suite filter)
-           PTR_TEST_CASE_EXCLUDE=*pat*   → --tce (test-case-exclude)
-           PTR_TEST_SUITE_EXCLUDE=*pat*  → --tse (test-suite-exclude)
+           ETST_TEST_CASE=*pattern*       → --tc (test-case filter)
+           ETST_TEST_SUITE=*pattern*      → --ts (test-suite filter)
+           ETST_TEST_CASE_EXCLUDE=*pat*   → --tce (test-case-exclude)
+           ETST_TEST_SUITE_EXCLUDE=*pat*  → --tse (test-suite-exclude)
 
         Returns "RUN_ALL" if no filters specified, otherwise
         "RUN: --tc ... --ts ..." etc.
@@ -285,7 +305,7 @@ class EmbeddedTestRunner(_BaseRunner):
         # Resume from a specific test — skip all tests up to and including
         # the named test, then run the rest. Useful for resuming after a
         # failure without re-running already-passed tests.
-        resume_after = os.environ.get("PTR_RESUME_AFTER", "").strip()
+        resume_after = _env("ETST_RESUME_AFTER", "PTR_RESUME_AFTER")
 
         filters = []
 
@@ -309,20 +329,20 @@ class EmbeddedTestRunner(_BaseRunner):
                     filters.append(arg)
                     i += 1
 
-        # Source 2: environment variables
-        env_map = {
-            "PTR_TEST_CASE": "--tc",
-            "PTR_TEST_SUITE": "--ts",
-            "PTR_TEST_CASE_EXCLUDE": "--tce",
-            "PTR_TEST_SUITE_EXCLUDE": "--tse",
-            "PTR_UNSKIP_TEST_CASE": "--unskip-tc",
-            "PTR_UNSKIP_TEST_SUITE": "--unskip-ts",
-            "PTR_SKIP_TEST_CASE": "--skip-tc",
-            "PTR_SKIP_TEST_SUITE": "--skip-ts",
-            "PTR_NO_SKIP": "--no-skip",
-        }
-        for env_var, flag in env_map.items():
-            value = os.environ.get(env_var, "").strip()
+        # Source 2: environment variables (ETST_* preferred, PTR_* deprecated)
+        env_map = [
+            ("ETST_TEST_CASE", "PTR_TEST_CASE", "--tc"),
+            ("ETST_TEST_SUITE", "PTR_TEST_SUITE", "--ts"),
+            ("ETST_TEST_CASE_EXCLUDE", "PTR_TEST_CASE_EXCLUDE", "--tce"),
+            ("ETST_TEST_SUITE_EXCLUDE", "PTR_TEST_SUITE_EXCLUDE", "--tse"),
+            ("ETST_UNSKIP_TEST_CASE", "PTR_UNSKIP_TEST_CASE", "--unskip-tc"),
+            ("ETST_UNSKIP_TEST_SUITE", "PTR_UNSKIP_TEST_SUITE", "--unskip-ts"),
+            ("ETST_SKIP_TEST_CASE", "PTR_SKIP_TEST_CASE", "--skip-tc"),
+            ("ETST_SKIP_TEST_SUITE", "PTR_SKIP_TEST_SUITE", "--skip-ts"),
+            ("ETST_NO_SKIP", "PTR_NO_SKIP", "--no-skip"),
+        ]
+        for new_var, old_var, flag in env_map:
+            value = _env(new_var, old_var)
             if value:
                 if flag == "--no-skip":
                     # Boolean flag — just append the flag, no value
@@ -540,14 +560,14 @@ class EmbeddedTestRunner(_BaseRunner):
         # Skipped for intermediate cycles (e.g. Phase 2 of sleep) — the
         # host stays in control and sends RESUME_AFTER directly.
         #
-        # Set PTR_POST_TEST=restart for acceptance test workflows.
+        # Set ETST_POST_TEST=restart for acceptance test workflows.
         if skip_post_test:
             _echo("[runner] Intermediate cycle — skipping post-test command")
             self._close_serial()
             return
-        post_test = os.environ.get("PTR_POST_TEST", "sleep").lower()
+        post_test = _env("ETST_POST_TEST", "PTR_POST_TEST", "sleep").lower()
         if post_test == "none":
-            _echo("[runner] PTR_POST_TEST=none — closing without command")
+            _echo("[runner] ETST_POST_TEST=none — closing without command")
         elif self._ser and self._ser.is_open:
             cmd_map = {
                 "sleep": "SLEEP",

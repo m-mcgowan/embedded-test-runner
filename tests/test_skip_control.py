@@ -26,21 +26,21 @@ class TestBuildInitialCommand:
 
     def test_test_case_filter(self):
         runner = make_runner()
-        with patch.dict(os.environ, {"PTR_TEST_CASE": "*foo*"}, clear=True):
+        with patch.dict(os.environ, {"ETST_TEST_CASE": "*foo*"}, clear=True):
             cmd = runner._build_initial_command()
         assert "--tc *foo*" in cmd
         assert cmd.startswith("RUN: ")
 
     def test_test_suite_filter(self):
         runner = make_runner()
-        with patch.dict(os.environ, {"PTR_TEST_SUITE": "*WDT*"}, clear=True):
+        with patch.dict(os.environ, {"ETST_TEST_SUITE": "*WDT*"}, clear=True):
             cmd = runner._build_initial_command()
         assert "--ts *WDT*" in cmd
 
     def test_unskip_test_case(self):
         runner = make_runner()
         with patch.dict(
-            os.environ, {"PTR_UNSKIP_TEST_CASE": "*TWDT*"}, clear=True
+            os.environ, {"ETST_UNSKIP_TEST_CASE": "*TWDT*"}, clear=True
         ):
             cmd = runner._build_initial_command()
         assert "--unskip-tc *TWDT*" in cmd
@@ -48,7 +48,7 @@ class TestBuildInitialCommand:
     def test_unskip_test_suite(self):
         runner = make_runner()
         with patch.dict(
-            os.environ, {"PTR_UNSKIP_TEST_SUITE": "*WDT*"}, clear=True
+            os.environ, {"ETST_UNSKIP_TEST_SUITE": "*WDT*"}, clear=True
         ):
             cmd = runner._build_initial_command()
         assert "--unskip-ts *WDT*" in cmd
@@ -56,7 +56,7 @@ class TestBuildInitialCommand:
     def test_skip_test_case(self):
         runner = make_runner()
         with patch.dict(
-            os.environ, {"PTR_SKIP_TEST_CASE": "*slow*"}, clear=True
+            os.environ, {"ETST_SKIP_TEST_CASE": "*slow*"}, clear=True
         ):
             cmd = runner._build_initial_command()
         assert "--skip-tc *slow*" in cmd
@@ -64,14 +64,14 @@ class TestBuildInitialCommand:
     def test_skip_test_suite(self):
         runner = make_runner()
         with patch.dict(
-            os.environ, {"PTR_SKIP_TEST_SUITE": "*heavy*"}, clear=True
+            os.environ, {"ETST_SKIP_TEST_SUITE": "*heavy*"}, clear=True
         ):
             cmd = runner._build_initial_command()
         assert "--skip-ts *heavy*" in cmd
 
     def test_no_skip_flag(self):
         runner = make_runner()
-        with patch.dict(os.environ, {"PTR_NO_SKIP": "1"}, clear=True):
+        with patch.dict(os.environ, {"ETST_NO_SKIP": "1"}, clear=True):
             cmd = runner._build_initial_command()
         assert "--no-skip" in cmd
         # Should not have "1" as a value — it's a boolean flag
@@ -81,7 +81,7 @@ class TestBuildInitialCommand:
         runner = make_runner()
         with patch.dict(
             os.environ,
-            {"PTR_UNSKIP_TEST_CASE": "*TWDT fires on*"},
+            {"ETST_UNSKIP_TEST_CASE": "*TWDT fires on*"},
             clear=True,
         ):
             cmd = runner._build_initial_command()
@@ -91,7 +91,7 @@ class TestBuildInitialCommand:
     def test_value_without_spaces_is_not_quoted(self):
         runner = make_runner()
         with patch.dict(
-            os.environ, {"PTR_TEST_CASE": "*TWDT*"}, clear=True
+            os.environ, {"ETST_TEST_CASE": "*TWDT*"}, clear=True
         ):
             cmd = runner._build_initial_command()
         assert '"' not in cmd
@@ -101,8 +101,8 @@ class TestBuildInitialCommand:
         with patch.dict(
             os.environ,
             {
-                "PTR_TEST_SUITE": "*Service/WDT*",
-                "PTR_UNSKIP_TEST_CASE": "*TWDT*",
+                "ETST_TEST_SUITE": "*Service/WDT*",
+                "ETST_UNSKIP_TEST_CASE": "*TWDT*",
             },
             clear=True,
         ):
@@ -127,7 +127,7 @@ class TestBuildInitialCommand:
         options.program_args = ["--ts", "*Suite*"]
         runner = make_runner(options=options)
         with patch.dict(
-            os.environ, {"PTR_UNSKIP_TEST_CASE": "*target*"}, clear=True
+            os.environ, {"ETST_UNSKIP_TEST_CASE": "*target*"}, clear=True
         ):
             cmd = runner._build_initial_command()
         assert "--ts" in cmd
@@ -161,13 +161,13 @@ class TestBuildInitialCommand:
 
 
 class TestResumeAfter:
-    """Tests for PTR_RESUME_AFTER env var."""
+    """Tests for ETST_RESUME_AFTER env var."""
 
     def test_resume_after_basic(self):
         runner = make_runner()
         with patch.dict(
             os.environ,
-            {"PTR_RESUME_AFTER": "my test name"},
+            {"ETST_RESUME_AFTER": "my test name"},
             clear=True,
         ):
             cmd = runner._build_initial_command()
@@ -179,8 +179,8 @@ class TestResumeAfter:
         with patch.dict(
             os.environ,
             {
-                "PTR_RESUME_AFTER": "some test",
-                "PTR_TEST_SUITE": "*WDT*",
+                "ETST_RESUME_AFTER": "some test",
+                "ETST_TEST_SUITE": "*WDT*",
             },
             clear=True,
         ):
@@ -194,7 +194,7 @@ class TestResumeAfter:
         runner = make_runner(options=options)
         with patch.dict(
             os.environ,
-            {"PTR_RESUME_AFTER": "previous test"},
+            {"ETST_RESUME_AFTER": "previous test"},
             clear=True,
         ):
             cmd = runner._build_initial_command()
@@ -208,8 +208,8 @@ class TestResumeAfter:
         with patch.dict(
             os.environ,
             {
-                "PTR_RESUME_AFTER": "test A",
-                "PTR_TEST_CASE": "*foo*",
+                "ETST_RESUME_AFTER": "test A",
+                "ETST_TEST_CASE": "*foo*",
             },
             clear=True,
         ):
@@ -218,10 +218,10 @@ class TestResumeAfter:
         assert not cmd.startswith("RUN:")
 
     def test_no_resume_after_returns_normal(self):
-        """Without PTR_RESUME_AFTER, normal RUN command is built."""
+        """Without ETST_RESUME_AFTER, normal RUN command is built."""
         runner = make_runner()
         with patch.dict(
-            os.environ, {"PTR_TEST_CASE": "*foo*"}, clear=True
+            os.environ, {"ETST_TEST_CASE": "*foo*"}, clear=True
         ):
             cmd = runner._build_initial_command()
         assert cmd.startswith("RUN: ")
