@@ -411,7 +411,7 @@ inline void extract_etst_flags(std::vector<String>& args) {
 // Non-skipped target for ordering tests
 TEST_CASE("_target_ordering" * doctest::skip()) { FAIL("should not run"); }
 
-TEST_SUITE("extract_etst_flags") // was extract_ptr_flags {
+TEST_SUITE("extract_etst_flags") {
 
 TEST_CASE("unskip then skip: last flag wins") {
     // Start: _target_ordering is skipped (decorator)
