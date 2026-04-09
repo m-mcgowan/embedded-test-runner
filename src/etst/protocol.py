@@ -14,7 +14,7 @@ Payload is tag-specific. Common conventions (shared helpers):
 
 Usage::
 
-    from pio_test_runner.protocol import parse_line
+    from etst.protocol import parse_line
 
     parsed = parse_line('ETST:READY *7F')
     if parsed and parsed.crc_valid:

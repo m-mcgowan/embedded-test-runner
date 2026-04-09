@@ -8,7 +8,7 @@ avoiding USB_UART_CHIP_RESET on ESP32-S3.
 
 Usage::
 
-    from pio_test_runner.serial_port import open_serial
+    from etst.serial_port import open_serial
 
     ser = open_serial("/dev/cu.usbmodem1424101")
     # Device is NOT reset — DTR/RTS not touched

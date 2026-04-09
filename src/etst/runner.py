@@ -1,4 +1,4 @@
-"""PlatformIO test runner plugin for embedded devices.
+"""Embedded test runner plugin for PlatformIO devices.
 
 Extends PlatformIO's TestRunnerBase with crash detection, disconnect
 handling, and framework-agnostic test result parsing via embedded-bridge
@@ -17,7 +17,7 @@ Two modes of operation:
 
 Usage: create ``test/test_custom_runner.py`` in your PlatformIO project::
 
-    from pio_test_runner.runner import EmbeddedTestRunner
+    from etst.runner import EmbeddedTestRunner
 
     class CustomTestRunner(EmbeddedTestRunner):
         pass
@@ -124,7 +124,7 @@ class EmbeddedTestRunner(_BaseRunner):
     PIO requires custom runners in ``test/test_custom_runner.py`` with
     class name ``CustomTestRunner``. Subclass this runner there::
 
-        from pio_test_runner.runner import EmbeddedTestRunner
+        from etst.runner import EmbeddedTestRunner
 
         class CustomTestRunner(EmbeddedTestRunner):
             pass

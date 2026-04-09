@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pio-test-runner"
+name = "embedded-test-runner"
 dynamic = ["version"]
-description = "PlatformIO test orchestration for embedded devices"
+description = "Test orchestration for embedded devices"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 requires-python = ">=3.10"
