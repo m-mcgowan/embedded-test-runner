@@ -29,6 +29,7 @@ class ProtocolState(enum.Enum):
     RUNNING = enum.auto()
     SLEEPING = enum.auto()
     FINISHED = enum.auto()
+    ERROR = enum.auto()
 
 
 class ReadyRunProtocol:
@@ -55,6 +56,9 @@ class ReadyRunProtocol:
         self._test_skip: int = 0
         self._test_run: int = 0
         self._busy_until: float = 0  # monotonic time when busy period ends
+        self._accumulated_args: list[str] = []
+        self._error_code: str = ""
+        self._error_message: str = ""
 
     def feed(self, message: bytes | str) -> None:
         """Feed a line of device output."""
@@ -70,8 +74,22 @@ class ReadyRunProtocol:
         if self._state == ProtocolState.WAITING_FOR_READY:
             if parsed and parsed.tag == "READY" and parsed.crc_valid is not False:
                 self._state = ProtocolState.READY
+                self._accumulated_args.clear()  # Fresh configure phase
                 logger.info("Device ready")
             return
+
+        # Accumulate ARGS while in READY state
+        if self._state == ProtocolState.READY:
+            if parsed and parsed.tag == "ARGS" and parsed.crc_valid is not False:
+                self._accumulated_args.append(parsed.payload_str)
+                return
+            if parsed and parsed.tag == "ERROR" and parsed.crc_valid is not False:
+                parts = parsed.payload_str.split(None, 1)
+                self._error_code = parts[0] if parts else ""
+                self._error_message = parts[1].strip('"') if len(parts) > 1 else ""
+                self._state = ProtocolState.ERROR
+                logger.error("Device error (%s): %s", self._error_code, self._error_message)
+                return
 
         if self._state != ProtocolState.RUNNING:
             return
@@ -145,6 +163,16 @@ class ReadyRunProtocol:
         elif parsed.tag == "DONE":
             self._state = ProtocolState.FINISHED
             logger.info("Device reported DONE")
+
+        elif parsed.tag == "ERROR":
+            parts = parsed.payload_str.split(None, 1)
+            self._error_code = parts[0] if parts else ""
+            self._error_message = parts[1].strip('"') if len(parts) > 1 else ""
+            self._state = ProtocolState.ERROR
+            logger.error("Device error (%s): %s", self._error_code, self._error_message)
+
+        elif parsed.tag == "WARN":
+            logger.warning("Device warning: %s", parsed.payload_str)
 
     def command_sent(self) -> None:
         """Signal that the host has sent a RUN command.
@@ -224,6 +252,21 @@ class ReadyRunProtocol:
         """Test names seen across all cycles (for resume-after exclude)."""
         return list(self._completed_tests)
 
+    @property
+    def accumulated_args(self) -> list[str]:
+        """Args accumulated from ETST:ARGS lines during READY state."""
+        return list(self._accumulated_args)
+
+    @property
+    def error_code(self) -> str:
+        """Error code from ETST:ERROR (e.g. 'config', 'hardware')."""
+        return self._error_code
+
+    @property
+    def error_message(self) -> str:
+        """Error message from ETST:ERROR."""
+        return self._error_message
+
     def reset(self) -> None:
         """Reset all state for a fresh test cycle.
 
@@ -239,6 +282,9 @@ class ReadyRunProtocol:
         self._test_total = 0
         self._test_skip = 0
         self._test_run = 0
+        self._accumulated_args.clear()
+        self._error_code = ""
+        self._error_message = ""
 
     def reset_all(self) -> None:
         """Full reset including completed test history."""
