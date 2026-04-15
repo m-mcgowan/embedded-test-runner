@@ -356,6 +356,33 @@ inline int modify_skip(const char* pattern, bool match_suite, bool skip_value) {
 }
 
 /**
+ * @brief Evaluate env requirements registered by require_env decorators.
+ *
+ * Sets m_skip on tests whose requirements are not met.
+ * Call after env vars are populated (post-handshake) and before context.run().
+ *
+ * @return Number of tests skipped due to unmet env requirements.
+ */
+inline int apply_env_requirements() {
+    int skipped = 0;
+    for (const auto& req : etst::detail::env_requirements()) {
+        bool met;
+        if (req.value) {
+            const char* val = etst::env(req.key);
+            met = val && strcmp(val, req.value) == 0;
+        } else {
+            met = etst::env_is(req.key);
+        }
+        if (!met) {
+            // Skip by test name (not suite)
+            modify_skip(req.test_name, false, true);
+            skipped++;
+        }
+    }
+    return skipped;
+}
+
+/**
  * @brief Extract and apply ETST-specific flags from args, return remaining args.
  *
  * ETST-specific flags modify the test registry (m_skip) and are removed
@@ -791,6 +818,13 @@ inline void run_cycle(const CommandResult& cmd_result) {
     }
 
     auto cmd = apply_runner_command(context, command);
+
+    // Apply env-based skip requirements (env vars are populated by --env args)
+    int env_skipped = apply_env_requirements();
+    if (env_skipped > 0) {
+        Serial.printf("Runner: %d test%s skipped by env requirements\n",
+                      env_skipped, env_skipped == 1 ? "" : "s");
+    }
 
     if (config.configure) {
         config.configure(context);

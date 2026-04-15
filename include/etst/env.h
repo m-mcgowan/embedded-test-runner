@@ -172,6 +172,52 @@ inline const char* env<const char*>(const char* key, const char* default_value) 
     return (val != nullptr) ? val : default_value;
 }
 
+// =====================================================================
+// Doctest require_env decorator (optional — only when doctest is included)
+// =====================================================================
+
+#ifdef DOCTEST_LIBRARY_INCLUDED
+
+namespace detail {
+
+/// A single env requirement registered by a decorator.
+struct EnvRequirement {
+    const char* test_name;
+    const char* test_suite;
+    const char* key;
+    const char* value;  // nullptr = truthy check
+};
+
+/// Global registry of env requirements.
+inline std::vector<EnvRequirement>& env_requirements() {
+    static std::vector<EnvRequirement> reqs;
+    return reqs;
+}
+
+}  // namespace detail
+
+/// Doctest decorator: skip test if env var requirement not met.
+///
+/// Usage:
+///   TEST_CASE("GPS fix" * etst::require_env("HAS_GPS")) { ... }
+///   TEST_CASE("v1.10" * etst::require_env("DEVICE_REV", "1.10")) { ... }
+struct require_env {
+    const char* key;
+    const char* value;
+
+    require_env(const char* k, const char* v = nullptr) : key(k), value(v) {}
+
+    void fill(doctest::detail::TestCase& tc) const {
+        detail::env_requirements().push_back({tc.m_name, tc.m_test_suite, key, value});
+    }
+
+    void fill(doctest::detail::TestSuite&) const {
+        // Suite-level requirements: future extension
+    }
+};
+
+#endif  // DOCTEST_LIBRARY_INCLUDED
+
 }  // namespace etst
 
 // =====================================================================
