@@ -370,6 +370,108 @@ class EmbeddedTestRunner(_BaseRunner):
         _echo(f"[runner] Filters: {command}")
         return command
 
+    def _collect_env_vars(self):
+        """Collect test env vars from ETST_ENV_* and --env program args.
+
+        Returns:
+            dict[str, str]: Key-value pairs (prefix stripped).
+        """
+        env_vars = {}
+
+        # Source 1: ETST_ENV_* from host environment
+        for key, value in os.environ.items():
+            if key.startswith("ETST_ENV_"):
+                stripped = key[len("ETST_ENV_"):]
+                if stripped:
+                    env_vars[stripped] = value
+
+        # Source 2: --env from program args (overrides host env)
+        program_args = getattr(self.options, "program_args", None) or []
+        i = 0
+        while i < len(program_args):
+            if program_args[i] == "--env" and i + 1 < len(program_args):
+                kv = program_args[i + 1]
+                eq_pos = kv.find("=")
+                if eq_pos > 0:
+                    env_vars[kv[:eq_pos]] = kv[eq_pos + 1:]
+                i += 2
+            else:
+                i += 1
+
+        return env_vars
+
+    def _build_args_and_run(self):
+        """Build ETST:ARGS lines and the RUN command.
+
+        Returns:
+            tuple[list[str], str]: (args_lines, run_command)
+        """
+        resume_after = _env("ETST_RESUME_AFTER", "PTR_RESUME_AFTER")
+        args_lines = []
+
+        # Env vars → --env K=V args
+        env_vars = self._collect_env_vars()
+        for key, value in env_vars.items():
+            args_lines.append(f"--env {key}={value}")
+
+        # Filters from program args (excluding --env, already extracted)
+        program_args = getattr(self.options, "program_args", None) or []
+        filter_parts = []
+        i = 0
+        while i < len(program_args):
+            if program_args[i] == "--env" and i + 1 < len(program_args):
+                i += 2  # skip --env pairs
+                continue
+            arg = program_args[i]
+            if arg.startswith("--") and i + 1 < len(program_args) and not program_args[i + 1].startswith("--"):
+                value = program_args[i + 1]
+                if " " in value:
+                    filter_parts.append(f'{arg} "{value}"')
+                else:
+                    filter_parts.append(f"{arg} {value}")
+                i += 2
+            else:
+                filter_parts.append(arg)
+                i += 1
+
+        # Filters from ETST_* env vars
+        env_map = [
+            ("ETST_CASE", "PTR_TEST_CASE", "--tc"),
+            ("ETST_SUITE", "PTR_TEST_SUITE", "--ts"),
+            ("ETST_CASE_EXCLUDE", "PTR_TEST_CASE_EXCLUDE", "--tce"),
+            ("ETST_SUITE_EXCLUDE", "PTR_TEST_SUITE_EXCLUDE", "--tse"),
+            ("ETST_UNSKIP_CASE", "PTR_UNSKIP_TEST_CASE", "--unskip-tc"),
+            ("ETST_UNSKIP_SUITE", "PTR_UNSKIP_TEST_SUITE", "--unskip-ts"),
+            ("ETST_SKIP_CASE", "PTR_SKIP_TEST_CASE", "--skip-tc"),
+            ("ETST_SKIP_SUITE", "PTR_SKIP_TEST_SUITE", "--skip-ts"),
+            ("ETST_NO_SKIP", "PTR_NO_SKIP", "--no-skip"),
+        ]
+        for new_var, old_var, flag in env_map:
+            value = _env(new_var, old_var)
+            if value:
+                if flag == "--no-skip":
+                    filter_parts.append(flag)
+                elif " " in value:
+                    filter_parts.append(f'{flag} "{value}"')
+                else:
+                    filter_parts.append(f"{flag} {value}")
+
+        if filter_parts:
+            args_lines.append(" ".join(filter_parts))
+
+        # Build RUN command
+        if resume_after:
+            suffix = ""
+            if filter_parts:
+                suffix = f" {' '.join(filter_parts)}"
+            run_cmd = f"RESUME_AFTER: {resume_after}{suffix}"
+        elif not args_lines:
+            run_cmd = "RUN_ALL"
+        else:
+            run_cmd = "RUN"
+
+        return args_lines, run_cmd
+
     def stage_testing(self):
         """Override PIO's stage_testing to manage the full serial lifecycle.
 
