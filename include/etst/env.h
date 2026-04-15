@@ -179,24 +179,14 @@ inline const char* env<const char*>(const char* key, const char* default_value) 
 // =====================================================================
 
 /// Early-return from the current test if @p key is not truthy.
-/// Intended for use inside a TEST_CASE or sub-case body.
-#define ETST_REQUIRE_ENV(key)                                               \
-    do {                                                                    \
-        if (!etst::env_is(key)) {                                           \
-            WARN("ETST_REQUIRE_ENV: env var '" key "' not set / falsy — " \
-                 "skipping");                                               \
-            return;                                                         \
-        }                                                                   \
-    } while (0)
+/// Framework-agnostic — works with any test framework, not just doctest.
+#define ETST_REQUIRE_ENV(key) \
+    do { if (!etst::env_is(key)) { return; } } while (0)
 
 /// Early-return from the current test if @p key does not equal @p expected.
-/// Comparison is done with strcmp (case-sensitive).
-#define ETST_REQUIRE_ENV_EQ(key, expected)                                    \
-    do {                                                                      \
-        const char* _etst_val = etst::env(key);                              \
-        if (_etst_val == nullptr || strcmp(_etst_val, (expected)) != 0) {    \
-            WARN("ETST_REQUIRE_ENV_EQ: env var '" key                        \
-                 "' does not equal '" expected "' — skipping");              \
-            return;                                                           \
-        }                                                                     \
+/// Framework-agnostic — works with any test framework, not just doctest.
+#define ETST_REQUIRE_ENV_EQ(key, expected) \
+    do { \
+        const char* _etst_val = etst::env(key); \
+        if (!_etst_val || strcmp(_etst_val, (expected)) != 0) { return; } \
     } while (0)
