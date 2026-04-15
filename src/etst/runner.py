@@ -493,7 +493,7 @@ class EmbeddedTestRunner(_BaseRunner):
 
         try:
             self.protocol.reset_all()
-            initial_command = self._build_initial_command()
+            self._args_lines, initial_command = self._build_args_and_run()
             self._initial_filters = self._extract_filters(initial_command)
             self._run_test_cycle(command=initial_command, reset=True)
 
@@ -584,8 +584,10 @@ class EmbeddedTestRunner(_BaseRunner):
                 self._on_serial_data(data)
                 last_activity = time.time()
 
-                # Check if READY → send command
+                # Check if READY → send ARGS lines then command
                 if self.protocol.state == ProtocolState.READY:
+                    for args_line in getattr(self, '_args_lines', []):
+                        self._send_command(f"ETST:ARGS {args_line}")
                     self._send_command(command)
                     self.protocol.command_sent()
             else:
@@ -628,6 +630,18 @@ class EmbeddedTestRunner(_BaseRunner):
             if self.protocol.state == ProtocolState.FINISHED:
                 _echo("[runner] ETST:DONE received")
                 self._report_test_failures()
+                break
+            if self.protocol.state == ProtocolState.ERROR:
+                _secho(
+                    f"\nERROR: Device reported error ({self.protocol.error_code}): "
+                    f"{self.protocol.error_message}",
+                    fg="red", err=True,
+                )
+                self._add_error_case(
+                    f"device_error_{self.protocol.error_code}",
+                    self.protocol.error_message,
+                    RuntimeError(f"ETST:ERROR {self.protocol.error_code}: {self.protocol.error_message}"),
+                )
                 break
             if self.crash_detector.triggered:
                 break
