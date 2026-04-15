@@ -78,9 +78,9 @@ class ReadyRunProtocol:
                 logger.info("Device ready")
             return
 
-        # Accumulate ARGS while in READY state
+        # Accumulate ARGS while in READY state (ARG and ARGS are synonyms)
         if self._state == ProtocolState.READY:
-            if parsed and parsed.tag == "ARGS" and parsed.crc_valid is not False:
+            if parsed and parsed.tag in ("ARGS", "ARG") and parsed.crc_valid is not False:
                 self._accumulated_args.append(parsed.payload_str)
                 return
             if parsed and parsed.tag == "ERROR" and parsed.crc_valid is not False:

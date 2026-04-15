@@ -38,6 +38,14 @@ class TestArgsAccumulation:
         p.feed(format_crc("ETST:ARGS --env LATE=true"))
         assert len(p.accumulated_args) == 1
 
+    def test_arg_synonym_accumulated(self):
+        """ETST:ARG is accepted as a synonym for ETST:ARGS."""
+        p = ReadyRunProtocol()
+        p.feed(format_crc("ETST:READY"))
+        p.feed(format_crc("ETST:ARG --env FOO=bar"))
+        p.feed(format_crc("ETST:ARGS --tc *GPS*"))
+        assert p.accumulated_args == ["--env FOO=bar", "--tc *GPS*"]
+
 
 class TestErrorHandling:
     def test_error_during_running(self):

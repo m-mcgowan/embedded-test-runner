@@ -721,9 +721,16 @@ inline CommandResult wait_for_command(uint32_t timeout_ms) {
                 auto result = etst::validate_crc(buf, len);
                 if (result.valid) {
                     String content(result.content);
-                    // ETST:ARGS lines are accumulated, not returned as commands
+                    // ETST:ARGS and ETST:ARG (synonym) lines are accumulated,
+                    // not returned as commands
                     if (content.startsWith("ETST:ARGS ")) {
                         String payload = content.substring(10);
+                        payload.trim();
+                        cmd_result.args.push_back(payload);
+                        continue;
+                    }
+                    if (content.startsWith("ETST:ARG ")) {
+                        String payload = content.substring(9);
                         payload.trim();
                         cmd_result.args.push_back(payload);
                         continue;
