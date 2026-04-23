@@ -982,12 +982,18 @@ class EmbeddedTestRunner(_BaseRunner):
     def _ensure_test_results(self):
         """Ensure the test suite has results from all cycles.
 
-        PIO's DoctestTestCaseParser may not add cases in orchestrated mode.
-        Add PASSED cases for completed tests that don't have a case yet,
-        excluding any that had assertion failures (already reported as FAILED).
+        PIO's DoctestTestCaseParser adds phantom cases with empty names
+        in orchestrated mode — it needs blank lines between test blocks
+        to finalize names, which embedded doctest output doesn't emit.
+        Prune those here, then add PASSED cases for completed tests.
         """
         if TestCase is None or TestStatus is None:
             return
+
+        # Prune phantom cases with empty or whitespace-only names
+        self.test_suite.cases[:] = [
+            c for c in self.test_suite.cases if c.name and c.name.strip()
+        ]
 
         existing = {c.name for c in self.test_suite.cases}
 

@@ -254,6 +254,47 @@ class TestFullDoctestSession:
         # Disconnect handler saw the RECONNECT — no longer active
         assert not runner.disconnect_handler.active
 
+    def test_phantom_cases_pruned(self):
+        """PIO's DoctestTestCaseParser creates empty-named cases on dividers
+        when output lacks blank lines. _ensure_test_results must prune them."""
+        runner = make_runner()
+
+        # Simulate doctest output with divider lines but no blank separators
+        # (as embedded firmware produces — ETST markers fill any gaps)
+        session = [
+            _crc("ETST:READY"),
+            "Runner: RUN_ALL",
+            "===============================================================================",
+            "test/test_env_vars.cpp:14:",
+            "TEST SUITE: EnvVars",
+            "TEST CASE:  test one",
+            _crc('ETST:CASE:START suite="EnvVars" name="test one"'),
+            "test/test_env_vars.cpp:15: SUCCESS: CHECK( true ) is correct!",
+            "===============================================================================",
+            "test/test_env_vars.cpp:20:",
+            "TEST SUITE: EnvVars",
+            "TEST CASE:  test two",
+            _crc('ETST:CASE:START suite="EnvVars" name="test two"'),
+            "test/test_env_vars.cpp:21: SUCCESS: CHECK( 1 == 1 ) is correct!",
+            "===============================================================================",
+            "[doctest] test cases: 2 | 2 passed | 0 failed | 0 skipped",
+            "[doctest] Status: SUCCESS!",
+            _crc("ETST:DONE"),
+        ]
+        feed_session(runner, session)
+
+        assert runner.protocol.state == ProtocolState.FINISHED
+
+        # Before pruning: PIO's parser would have added cases with empty names
+        # After _ensure_test_results: only real tests remain
+        runner._ensure_test_results()
+        names = [c.name for c in runner.test_suite.cases]
+        assert all(n.strip() for n in names), f"Empty-named case found: {names}"
+        assert "EnvVars/test one" in names
+        assert "EnvVars/test two" in names
+        # Count should equal number of real tests, not dividers
+        assert len(names) == 2
+
 
 class TestProtocolHandshake:
     """Test the READY/RUN/DONE handshake through the runner."""
