@@ -557,6 +557,97 @@ class TestOrchestratedProtocol:
         assert runner.protocol.state == ProtocolState.RUNNING
 
 
+class TestEnsureTestResults:
+    """_ensure_test_results must collapse subcase iterations to TEST_CASE
+    granularity by trusting protocol.completed_tests as the canonical
+    list.
+
+    doctest fires logTestStart() once per subcase entry (subcase_start
+    resets hasLoggedCurrentTestStart), so PIO's parser emits one TestCase
+    per subcase pass — typically named "<test_case>/<subcase>". The
+    protocol's CASE:START stream, in contrast, dedupes per TEST_CASE.
+    Without reconciliation the suite ends up with both subcase-level
+    parser entries AND a re-added bare parent for every test, inflating
+    the count by hundreds.
+    """
+
+    def test_subcase_entries_collapsed_to_parent(self):
+        from etst.runner import EmbeddedTestRunner
+        from platformio.test.result import TestCase, TestStatus
+
+        runner = make_runner()
+
+        # Simulate PIO's parser having added subcase-level entries for a
+        # test that has SUBCASEs ("parent/sub1", "parent/sub2"), plus a
+        # plain test that has no subcases ("plain"). The protocol's
+        # completed_tests has one entry per TEST_CASE.
+        runner.test_suite.cases.extend([
+            TestCase(name="parent/sub1", status=TestStatus.PASSED),
+            TestCase(name="parent/sub2", status=TestStatus.PASSED),
+            TestCase(name="plain", status=TestStatus.PASSED),
+        ])
+        runner.protocol._completed_tests = ["parent", "plain", "missing_from_parser"]
+
+        runner._ensure_test_results()
+
+        names = sorted(c.name for c in runner.test_suite.cases)
+        assert names == ["missing_from_parser", "parent", "plain"], (
+            f"Expected exactly the TEST_CASE-level entries, got {names}. "
+            "Subcase entries (parent/sub1, parent/sub2) must be collapsed "
+            "to their parent name from protocol.completed_tests."
+        )
+
+    def test_failed_subcase_is_preserved(self):
+        """A FAILED subcase entry must NOT be dropped — failures carry
+        location/diagnostic info that the bare-parent re-add would lose.
+        """
+        from platformio.test.result import TestCase, TestStatus
+
+        runner = make_runner()
+        runner.test_suite.cases.extend([
+            TestCase(name="parent/sub1", status=TestStatus.PASSED),
+            TestCase(
+                name="parent/sub2",
+                status=TestStatus.FAILED,
+                message="CHECK failed",
+            ),
+        ])
+        runner.protocol._completed_tests = ["parent"]
+
+        runner._ensure_test_results()
+
+        statuses = {(c.name, c.status) for c in runner.test_suite.cases}
+        # The failed subcase entry stays (preserves diagnostics); the
+        # passed subcase is collapsed; the parent is added because no
+        # entry with name == "parent" yet exists.
+        assert ("parent/sub2", TestStatus.FAILED) in statuses, (
+            f"Failed subcase entry was dropped. Statuses: {statuses}"
+        )
+        assert ("parent", TestStatus.PASSED) in statuses or (
+            "parent" in {n for n, _ in statuses}
+        )
+
+    def test_phantom_empty_name_pruned(self):
+        """Belt-and-suspenders: empty-name phantoms (legacy parser bug)
+        must still be pruned even after the blank-line forwarding fix."""
+        from platformio.test.result import TestCase, TestStatus
+
+        runner = make_runner()
+        runner.test_suite.cases.extend([
+            TestCase(name="", status=TestStatus.PASSED),
+            TestCase(name="   ", status=TestStatus.PASSED),
+            TestCase(name="real_test", status=TestStatus.PASSED),
+        ])
+        runner.protocol._completed_tests = ["real_test"]
+
+        runner._ensure_test_results()
+
+        names = [c.name for c in runner.test_suite.cases]
+        assert names == ["real_test"], (
+            f"Empty/whitespace name phantoms not pruned. Got: {names!r}"
+        )
+
+
 class TestPioParserForwarding:
     """_on_serial_data must forward blank lines to PIO's doctest parser.
 
