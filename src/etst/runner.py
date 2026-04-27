@@ -716,23 +716,23 @@ class EmbeddedTestRunner(_BaseRunner):
         self._line_buf = parts[-1]  # incomplete trailing fragment (or "")
         for line in parts[:-1]:
             line = line.rstrip("\r")
-            if not line:
-                continue
-            # Our receivers process first (protocol, crash, memory, timing)
-            prev_total = self.protocol.test_total
-            self.router.feed(line)
-            # Display test counts when first reported
-            if self.protocol.test_total and not prev_total:
-                p = self.protocol
-                if p.test_skip:
-                    _echo(f"[runner] Tests: {p.test_total} total, {p.test_skip} skipped, {p.test_run} to run")
-                else:
-                    _echo(f"[runner] Tests: {p.test_total} total")
-            self._sync_test_name()
-            self._check_crash()
-            self._check_assertion_failure(line)
-            if self._finished_by_runner:
-                return
+            # Our receivers care only about non-empty lines (protocol tags
+            # never appear on blank lines).
+            if line:
+                prev_total = self.protocol.test_total
+                self.router.feed(line)
+                # Display test counts when first reported
+                if self.protocol.test_total and not prev_total:
+                    p = self.protocol
+                    if p.test_skip:
+                        _echo(f"[runner] Tests: {p.test_total} total, {p.test_skip} skipped, {p.test_run} to run")
+                    else:
+                        _echo(f"[runner] Tests: {p.test_total} total")
+                self._sync_test_name()
+                self._check_crash()
+                self._check_assertion_failure(line)
+                if self._finished_by_runner:
+                    return
 
             # Suppress output during disconnect windows and pre-READY boot
             if self.disconnect_handler.active:
@@ -741,7 +741,11 @@ class EmbeddedTestRunner(_BaseRunner):
             if state == ProtocolState.WAITING_FOR_READY and not self.options.verbose:
                 continue
 
-            # Delegate result parsing + echo to PIO's base runner
+            # Delegate result parsing + echo to PIO's base runner. Forward
+            # blank lines too — PIO's DoctestTestCaseParser uses the blank
+            # line after a "TEST CASE:  name" header to commit the parsed
+            # name. Stripping blanks here causes every parser-emitted case
+            # to have name="".
             try:
                 super().on_testing_line_output(line + "\n")
             except Exception:

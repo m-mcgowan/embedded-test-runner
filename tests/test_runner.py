@@ -557,6 +557,61 @@ class TestOrchestratedProtocol:
         assert runner.protocol.state == ProtocolState.RUNNING
 
 
+class TestPioParserForwarding:
+    """_on_serial_data must forward blank lines to PIO's doctest parser.
+
+    PIO's DoctestTestCaseParser uses the blank line that doctest emits
+    after a "TEST CASE:  name" header to commit the accumulated name
+    tokens via parse_name(). If blanks are stripped before forwarding,
+    every parser-emitted TestCase ends up with name="" — which inflates
+    the post-run summary count by ~2x and produces empty-named entries
+    in the test report.
+    """
+
+    def test_blank_lines_forwarded_after_test_case_header(self):
+        from unittest.mock import patch
+
+        runner = make_runner()
+        runner._line_buf = ""
+
+        # Reach RUNNING so _on_serial_data does forward to PIO's parser.
+        runner._on_serial_data((_crc("ETST:READY") + "\n").encode())
+        runner.protocol.command_sent()
+        assert runner.protocol.state == ProtocolState.RUNNING
+
+        forwarded: list[str] = []
+
+        def capture(self, line):
+            forwarded.append(line)
+
+        # super() in _on_serial_data resolves to _BaseRunner. Patch its
+        # on_testing_line_output (create=True since the mock base lacks it).
+        from etst.runner import EmbeddedTestRunner
+        base = EmbeddedTestRunner.__mro__[1]
+        with patch.object(base, "on_testing_line_output", capture, create=True):
+            doctest_block = (
+                "===============================================================================\n"
+                "test/foo.cpp:42:\n"
+                "TEST CASE:  some test name\n"
+                "\n"  # blank line — PIO's parser needs this to commit the name
+                "test/foo.cpp:45: PASSED:\n"
+                "  CHECK( x == 1 )\n"
+                "\n"
+                "===============================================================================\n"
+            )
+            runner._on_serial_data(doctest_block.encode())
+
+        # The fix is to forward blank lines to PIO's parser. Currently
+        # `if not line: continue` in _on_serial_data drops them.
+        blank_count = sum(1 for line in forwarded if line.strip() == "")
+        assert blank_count >= 1, (
+            f"No blank lines forwarded to PIO's parser. Forwarded {len(forwarded)} "
+            f"lines, none blank. Without blanks, PIO's DoctestTestCaseParser "
+            f"never commits the test case name and emits cases with name=''. "
+            f"Forwarded payloads: {forwarded!r}"
+        )
+
+
 class TestIntegration:
     def test_receivers_process_full_session(self):
         """All receivers correctly process a complete test session."""
