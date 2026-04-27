@@ -984,20 +984,44 @@ class EmbeddedTestRunner(_BaseRunner):
                 ))
 
     def _ensure_test_results(self):
-        """Ensure the test suite has results from all cycles.
+        """Reconcile the test suite to TEST_CASE granularity.
 
-        PIO's DoctestTestCaseParser adds phantom cases with empty names
-        in orchestrated mode — it needs blank lines between test blocks
-        to finalize names, which embedded doctest output doesn't emit.
-        Prune those here, then add PASSED cases for completed tests.
+        PIO's DoctestTestCaseParser emits one TestCase per doctest
+        divider. doctest emits a divider per subcase entry (because
+        subcase_start resets hasLoggedCurrentTestStart), so a
+        TEST_CASE("parent") with two SUBCASEs produces two parser
+        entries — typically named "parent/sub1" and "parent/sub2" —
+        plus the protocol's CASE:START stream still records "parent"
+        once. Without reconciliation the suite ends up with both
+        the subcase-level parser entries and a re-added bare "parent",
+        inflating PIO's outer count.
+
+        The reconciliation rules:
+          1. Drop empty/whitespace-named entries (legacy phantom case).
+          2. Drop PASSED entries whose name is not in
+             protocol.completed_tests (these are subcase iterations).
+             Failed/errored entries are kept regardless — they carry
+             diagnostic info that a bare-parent re-add would lose.
+          3. Add PASSED entries from protocol.completed_tests that
+             aren't already present (covers tests PIO's parser missed,
+             e.g. malformed output blocks).
         """
         if TestCase is None or TestStatus is None:
             return
 
-        # Prune phantom cases with empty or whitespace-only names
-        self.test_suite.cases[:] = [
-            c for c in self.test_suite.cases if c.name and c.name.strip()
-        ]
+        completed = set(self.protocol.completed_tests)
+
+        def keep(c):
+            if not c.name or not c.name.strip():
+                return False  # phantom
+            if c.status != TestStatus.PASSED:
+                return True   # preserve diagnostics
+            # Trust the protocol: only keep PASSED entries that name a
+            # known TEST_CASE. Subcase-iteration entries (e.g. "p/sub1"
+            # when completed_tests has only "p") get dropped here.
+            return not completed or c.name in completed
+
+        self.test_suite.cases[:] = [c for c in self.test_suite.cases if keep(c)]
 
         existing = {c.name for c in self.test_suite.cases}
 
