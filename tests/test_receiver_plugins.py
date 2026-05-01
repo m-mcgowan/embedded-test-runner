@@ -97,3 +97,57 @@ def test_predicate_attribute_filters_messages():
     runner.router.feed("more important things")
 
     assert plugin.messages == ["important event", "more important things"]
+
+
+class _BrokenInit:
+    def __init__(self, runner):
+        raise RuntimeError("nope")
+
+
+class _NoFeed:
+    def __init__(self, runner):
+        pass
+
+
+def test_plugin_with_broken_init_is_skipped(caplog):
+    import logging
+    caplog.set_level(logging.WARNING, logger="etst.runner")
+
+    runner = make_runner_with_plugins(
+        {"broken": _BrokenInit, "good": _RecordingReceiver}
+    )
+
+    # The broken plugin is skipped; the good one still loads.
+    assert len(runner._plugin_receivers) == 1
+    assert isinstance(runner._plugin_receivers[0], _RecordingReceiver)
+    assert any("broken" in rec.message for rec in caplog.records)
+
+
+def test_plugin_without_feed_is_skipped(caplog):
+    import logging
+    caplog.set_level(logging.WARNING, logger="etst.runner")
+
+    runner = make_runner_with_plugins({"nofeed": _NoFeed})
+
+    assert runner._plugin_receivers == []
+    assert any("feed" in rec.message for rec in caplog.records)
+
+
+def test_entry_point_load_failure_is_skipped(caplog):
+    import logging
+    caplog.set_level(logging.WARNING, logger="etst.runner")
+
+    class _ExplodingEP:
+        name = "exploding"
+        def load(self):
+            raise ImportError("fake import failure")
+
+    with fake_entry_points(
+        {"embedded_test_runner.receivers": [_ExplodingEP()]}
+    ):
+        runner = EmbeddedTestRunner(
+            MockTestSuite(), MockProjectConfig(), MockTestRunnerOptions()
+        )
+
+    assert runner._plugin_receivers == []
+    assert any("exploding" in rec.message for rec in caplog.records)
