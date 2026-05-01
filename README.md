@@ -273,6 +273,56 @@ TEST_CASE("formats storage") {
 
 The runner starts checking for hangs once the first test begins (not during boot).
 
+## Receiver plugins
+
+Other Python packages can attach receivers to your runner without any
+per-project glue code. This is how `pio-gcov` ships its `COV:` line
+capture — install the package, list it in `lib_deps` (or just
+`pip install`), and the receiver auto-attaches.
+
+### Declaring a plugin
+
+In your package's `pyproject.toml`:
+
+```toml
+[project.entry-points."embedded_test_runner.receivers"]
+my_plugin = "my_pkg.receivers:MyReceiver"
+```
+
+### Receiver class shape
+
+```python
+class MyReceiver:
+    """Auto-attached to EmbeddedTestRunner via entry point."""
+
+    def __init__(self, runner):
+        # `runner` is the live EmbeddedTestRunner. Read
+        # runner.test_suite.env_name / .test_name for partition info.
+        self._runner = runner
+
+    # Optional: filter messages. If absent, the receiver sees every line.
+    def predicate(self, message):
+        return isinstance(message, str) and message.startswith("MY:")
+
+    # Required: handle a matched message.
+    def feed(self, message):
+        ...
+
+    # Optional: per-partition lifecycle.
+    def on_partition_start(self):
+        ...
+
+    def on_partition_complete(self):
+        ...
+```
+
+### Failure handling
+
+A plugin that fails to import, raises during construction, or lacks
+`feed()` is logged and skipped — it cannot prevent the runner from
+starting. Hook methods that raise are isolated per plugin, so one
+broken plugin does not stop the others from running.
+
 ## Documentation
 
 - [Architecture & Design](docs/design.md) — protocol, components, deep sleep orchestration
