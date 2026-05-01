@@ -25,10 +25,13 @@ Usage: create ``test/test_custom_runner.py`` in your PlatformIO project::
 Then set ``test_framework = custom`` in ``platformio.ini``.
 """
 
+import importlib.metadata
 import logging
 import os
 import time
 import traceback
+
+PLUGIN_ENTRY_POINT_GROUP = "embedded_test_runner.receivers"
 
 try:
     import click
@@ -151,6 +154,12 @@ class EmbeddedTestRunner(_BaseRunner):
             (self.timing_tracker, None),
         ])
 
+        # Plugin receivers loaded from setuptools entry points. Tracked
+        # separately so on_partition_{start,complete} can forward to them
+        # without leaking Router internals.
+        self._plugin_receivers: list[object] = []
+        self._load_receiver_plugins()
+
         # Use robust parser if extending DoctestTestRunner
         if DoctestTestRunner is not None and hasattr(self, "_tc_parser"):
             self._tc_parser = RobustDoctestParser()
@@ -176,6 +185,54 @@ class EmbeddedTestRunner(_BaseRunner):
         # Tracks the last time we received output to detect silent hangs.
         self._last_line_time: float = 0.0
         self._line_mode_test_started = False
+
+    # ------------------------------------------------------------------
+    # Receiver plugin discovery
+    # ------------------------------------------------------------------
+
+    def _load_receiver_plugins(self):
+        """Discover and attach setuptools-entry-point receiver plugins.
+
+        Walks the ``embedded_test_runner.receivers`` group; for each entry
+        point loads the target class, instantiates it as ``cls(runner=self)``,
+        reads an optional ``predicate`` attribute or method, and attaches
+        the instance to ``self.router``. The instance is also tracked on
+        ``self._plugin_receivers`` so lifecycle hooks can forward to it.
+
+        Failures (import errors, constructor errors, missing ``feed``) are
+        logged and skipped — a broken plugin must not prevent the runner
+        from starting.
+        """
+        try:
+            eps = importlib.metadata.entry_points(group=PLUGIN_ENTRY_POINT_GROUP)
+        except Exception as exc:
+            logger.warning("Failed to enumerate receiver plugins: %s", exc)
+            return
+
+        for ep in eps:
+            try:
+                cls = ep.load()
+            except Exception as exc:
+                logger.warning("Failed to load receiver plugin %s: %s", ep.name, exc)
+                continue
+
+            try:
+                instance = cls(runner=self)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to instantiate receiver plugin %s: %s", ep.name, exc
+                )
+                continue
+
+            if not callable(getattr(instance, "feed", None)):
+                logger.warning(
+                    "Receiver plugin %s has no feed() method; skipping", ep.name
+                )
+                continue
+
+            predicate = getattr(instance, "predicate", None)
+            self.router.add(instance, predicate if callable(predicate) else None)
+            self._plugin_receivers.append(instance)
 
     # ------------------------------------------------------------------
     # Configuration hooks (override in subclass)
