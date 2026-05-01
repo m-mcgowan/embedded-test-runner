@@ -71,3 +71,54 @@ def test_full_lifecycle_order():
     runner.teardown()
 
     assert plugin.events == ["start", "complete"]
+
+
+class _BrokenStartReceiver:
+    def __init__(self, runner):
+        self.completed = False
+
+    def feed(self, message):
+        pass
+
+    def on_partition_start(self):
+        raise RuntimeError("start blew up")
+
+    def on_partition_complete(self):
+        self.completed = True
+
+
+def test_hook_exception_in_one_plugin_does_not_block_others(caplog):
+    import logging
+    caplog.set_level(logging.WARNING, logger="etst.runner")
+
+    eps = [
+        FakeEntryPoint("broken", _BrokenStartReceiver),
+        FakeEntryPoint("recorder", _LifecycleRecorder),
+    ]
+    with fake_entry_points({"embedded_test_runner.receivers": eps}):
+        runner = EmbeddedTestRunner(
+            MockTestSuite(), MockProjectConfig(), MockTestRunnerOptions()
+        )
+
+    runner.on_partition_start()
+
+    # Recorder still got "start" despite the broken plugin raising.
+    recorder = next(p for p in runner._plugin_receivers
+                    if isinstance(p, _LifecycleRecorder))
+    assert recorder.events == ["start"]
+    assert any("broken" in rec.message.lower() or "start blew up" in rec.message
+               for rec in caplog.records)
+
+
+def test_complete_runs_even_after_failed_start():
+    eps = [FakeEntryPoint("broken", _BrokenStartReceiver)]
+    with fake_entry_points({"embedded_test_runner.receivers": eps}):
+        runner = EmbeddedTestRunner(
+            MockTestSuite(), MockProjectConfig(), MockTestRunnerOptions()
+        )
+
+    runner.on_partition_start()  # raises internally, swallowed
+    runner.on_partition_complete()
+
+    plugin = runner._plugin_receivers[0]
+    assert plugin.completed is True
