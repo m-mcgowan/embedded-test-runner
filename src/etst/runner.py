@@ -969,7 +969,6 @@ class EmbeddedTestRunner(_BaseRunner):
             port,
             baudrate=self.get_test_speed(),
             reset=should_reset,
-            retries=1,
         )
         # Flush any garbage from serial open on macOS
         self._ser.write(b"\n")
