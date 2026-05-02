@@ -3,7 +3,7 @@
 import threading
 import time
 from io import BytesIO
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from conftest import (
     MockProjectConfig,
@@ -116,6 +116,41 @@ class TestLifecycle:
         assert len(errored) == 1
         assert "hang" in errored[0].name
         assert isinstance(errored[0].exception, RuntimeError)
+
+
+class TestOpenSerialRetries:
+    """See docs/issues/2026-05-02-open_serial-retries-1-flaky-back-to-back.md.
+
+    The runner used to override open_serial's default retries=5 with
+    retries=1, which turned a transient sub-second port-unavailable
+    window after esptool's USB-CDC re-enumeration into a hard partition
+    failure on back-to-back `pio test` invocations.
+    """
+
+    def test_open_serial_does_not_disable_retries(self):
+        runner = make_runner()
+        runner._resolve_port = lambda: "/dev/fake-port"
+        runner.get_test_speed = lambda: 115200
+
+        captured = {}
+
+        def fake_open_serial(port, **kwargs):
+            captured.update(kwargs)
+            ser = MagicMock()
+            ser.is_open = True
+            return ser
+
+        with patch("etst.serial_port.open_serial", side_effect=fake_open_serial):
+            runner._open_serial(reset=False)
+
+        # retries=1 means the for-loop in open_serial runs once and
+        # immediately re-raises on OSError/SerialException — no second
+        # chance to ride out USB-CDC re-enumeration. Either drop the
+        # arg (use the default of 5) or pass a number >= 3.
+        assert captured.get("retries", 5) > 1, (
+            "retries=1 disables retry; transient port unavailability "
+            "after esptool re-enumeration becomes a hard failure"
+        )
 
 
 class TestHangTimeout:
