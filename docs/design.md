@@ -14,8 +14,7 @@ assumption constantly:
   disappears; PIO declares the test failed
 - **Reset** — a watchdog reset or deliberate reboot loses the serial
   connection; PIO can't recover
-- **Long operations** — a GPS fix or cellular connection takes minutes;
-  PIO times out
+- **Long operations** — a GPS fix or cellular connection takes minutes; not easily distinguishable from a real hang.
 - **Crashes** — a backtrace scrolls past; PIO doesn't distinguish
   "crash" from "test output"
 
@@ -34,9 +33,9 @@ EmbeddedTestRunner                     etst/doctest/runner.h
   ├─ CrashDetector                       ├─ run_cycle()
   │    backtrace, WDT, panic             │    apply filters
   ├─ MemoryTracker                       │    modify_skip (unskip/skip)
-  │    ETST:MEM:BEFORE/AFTER              │    context.run()
+  │    ETST:MEM:BEFORE/AFTER             │    context.run()
   ├─ TimingTracker                       │    signal_done()
-  │    ETST:CASE:START                    ├─ idle_loop()
+  │    ETST:CASE:START                   ├─ idle_loop()
   ├─ RobustDoctestParser                 │    SLEEP/RESTART/re-run
   │    doctest output → results          └─ etst/test_runner.h
   └─ DisconnectHandler                       ETST: protocol emit helpers
@@ -83,6 +82,7 @@ via `validate_crc()`.
 | `RUN_ALL` | Host→Device | Run all tests |
 | `RUN: <flags>` | Host→Device | Run with filters |
 | `RESUME_AFTER: <name>` | Host→Device | Skip tests up to name |
+| `ETST:ARGS <token …>` | Host→Device | Pre-RUN configuration (e.g. `--env K=V`); repeatable |
 | `ETST:COUNTS total=N skip=N run=N` | Device→Host | Test count before execution |
 | `ETST:CASE:START suite=".." name=".."` | Device→Host | Test timing marker |
 | `ETST:MEM:BEFORE free=N min=N largest=N` | Device→Host | Heap before test |
@@ -195,11 +195,80 @@ When a test enters deep sleep:
 1. **First cycle**: `RUN_ALL` — tests run until one calls
    `signal_sleep()`.
 2. **Sleep resume**: Host waits, reconnects, sends
-   `RUN: --tc "<sleeping_test>"` — runs Phase 2 only.
+   `RUN: --wake --tc "<sleeping_test>"` — runs Phase 2 only.
+   The `--wake` flag tells the firmware that this is a Phase 2 wake
+   cycle so `etst::is_test_wake()` returns true.
 3. **Remaining cycle**: `RESUME_AFTER: <sleeping_test>` — device
    uses doctest's `first` option to skip past completed tests.
 4. **Repeat**: If another test sleeps during step 3, the loop
    continues.
+
+### Test Environment Variables (`<etst/env.h>`, `ETST:ARGS`)
+
+Hosts can forward arbitrary key-value pairs to the firmware before each
+test run. The runner collects them from two sources:
+
+- Host environment variables prefixed `ETST_ENV_*` (the prefix is
+  stripped before forwarding — `ETST_ENV_HAS_GPS=1` becomes `HAS_GPS=1`)
+- `pio test -a "--env KEY=VALUE"` program arguments
+
+The runner emits one `ETST:ARGS --env KEY=VALUE` line per pair before
+the `RUN` command. Firmware accumulates them into a per-cycle env store
+cleared at each `READY`.
+
+**Firmware lookups (`<etst/env.h>`):**
+
+```cpp
+const char* gps   = etst::env("HAS_GPS");           // nullptr if unset
+bool        debug = etst::env<bool>("DEBUG", false);
+int         baud  = etst::env<int>("UART_BAUD", 115200);
+```
+
+**Conditional skipping** via the `require_env` doctest decorator:
+
+```cpp
+TEST_CASE("GPS fix" * etst::require_env("HAS_GPS"))         { ... }
+TEST_CASE("v1.10"   * etst::require_env("DEVICE_REV","1.10")) { ... }
+```
+
+Tests whose requirements aren't met emit `ETST:WARN` and skip cleanly.
+
+### Receiver Plugins (`embedded_test_runner.receivers`)
+
+Other Python packages can attach receivers to the runner without
+per-project glue code. `EmbeddedTestRunner.__init__` walks the
+`embedded_test_runner.receivers` setuptools entry-point group,
+instantiates each plugin class with `runner=self`, reads an optional
+`predicate` attribute or method, and adds the instance to
+`self.router`. Failures (import, construction, missing `feed`) are
+logged and skipped. See README "Receiver plugins" for the consumer
+contract.
+
+**Plugin class shape:**
+
+```python
+class MyReceiver:
+    def __init__(self, runner): ...
+    def predicate(self, message): ...     # optional filter
+    def feed(self, message): ...
+    def on_partition_start(self): ...     # optional, fired in setup()
+    def on_partition_complete(self): ...  # optional, fired in teardown()
+```
+
+**Lifecycle hooks** on `EmbeddedTestRunner` itself:
+
+- `on_partition_start()` — called from `setup()` before
+  `stage_testing` runs.
+- `on_partition_complete()` — called from `teardown()` after the test
+  cycle finishes.
+
+Default implementations forward to plugin receivers that opt in.
+Subclasses overriding either should call `super()` to preserve plugin
+notification.
+
+This is the integration point that lets `pio-gcov` capture per-partition
+`COV:` lines without each consumer project having to subclass
+`EmbeddedTestRunner` and register a receiver by hand.
 
 ## Project Structure
 
