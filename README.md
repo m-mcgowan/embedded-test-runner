@@ -239,7 +239,42 @@ Doctest-specific configuration via `etst::doctest::config`:
 | `ETST_ON_DONE` | `wait`, `sleep`, `lightsleep`, `restart`, `none` | `wait` | Action when tests complete. `wait` = idle loop (stays online). `sleep` = deep sleep (saves battery, USB disappears). `restart` = reboot. `none` = close serial. |
 | `ETST_RESUME_AFTER` | test name | none | Skip tests up to named test, run rest. |
 | `ETST_HANG_TIMEOUT` | seconds | `30` | No-output duration before declaring a hang. |
+| `ETST_ENV_<KEY>` | string | none | Forwarded to the firmware as `<KEY>` (prefix stripped). See "Test environment variables" below. |
 
+## Test environment variables
+
+Pass arbitrary key-value pairs from the host to the firmware at runtime — useful for board-specific switches, secrets, or anything that should not be baked into the binary.
+
+The runner collects values from two sources and forwards them on every cycle:
+
+```bash
+# Host env var (prefix is stripped: ETST_ENV_HAS_GPS=1 -> HAS_GPS=1)
+ETST_ENV_HAS_GPS=1 pio test -e my_board
+
+# Or as program args (one --env per key)
+pio test -e my_board -a '--env HAS_GPS=1' -a '--env DEVICE_REV=1.10'
+```
+
+Look them up on the firmware side via `<etst/env.h>`:
+
+```cpp
+#include <etst/env.h>
+
+const char* gps   = etst::env("HAS_GPS");                    // nullptr if unset
+bool        debug = etst::env<bool>("DEBUG", false);
+int         baud  = etst::env<int>("UART_BAUD", 115200);
+```
+
+Skip tests when a value is missing with the `require_env` doctest decorator:
+
+```cpp
+#include <etst/env.h>
+
+TEST_CASE("GPS fix" * etst::require_env("HAS_GPS"))         { ... }
+TEST_CASE("v1.10"   * etst::require_env("DEVICE_REV","1.10")){ ... }
+```
+
+A test whose requirements aren't met emits an `ETST:WARN` and skips cleanly — no failure.
 
 ## Hang Detection
 

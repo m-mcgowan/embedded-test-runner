@@ -171,25 +171,20 @@ struct TestFrameworkAdapter {
 };
 ```
 
-### Entry Point / main.cpp
+### Entry Point / main.cpp (Done — config struct shipped in v0.3.0)
 
 The `default_main.cpp` link conflict (DOCTEST_CONFIG_IMPLEMENT emitted by
-both the library and user code) blocks zero-config setup. Current state:
-users must create their own `test/main.cpp`.
+both the library and user code) was resolved in v0.3.0 — `default_main.cpp`
+is no longer in the library `srcFilter`; consumers create their own
+`test/main.cpp`. Customization points are exposed via the `etst::config`
+struct (framework-agnostic) and `etst::doctest::config` (doctest-specific).
+The previous weak-function approach (`ptr_board_init`, `ptr_after_cycle`,
+`ptr_configure_context`) was removed in the same release.
 
-The entry point design is intentionally left open — we need to understand
-what developers want to customize before locking down the abstraction.
-Known customization points:
-
-- Board initialization (filesystem mount, revision detection, power setup)
-- Framework configuration (doctest context options, test ordering)
-- Post-cycle cleanup (coverage dump, resource deinitialization)
-- Platform hooks (custom restart, custom sleep)
-- Ready timeout (standalone vs hosted operation)
-
-These are currently exposed via `etst::doctest::config` callbacks and weak
-functions. The right abstraction may be a builder pattern, a config struct,
-or something else entirely. Premature abstraction here would box us in.
+What's still open is *zero-config* setup — generating the shim and
+`main.cpp` automatically so consumers only need to add `lib_deps`. See
+the postinstall-hook design in `NOTES-shim-dx-2026-04-27.md` (Strategy
+C, candidate for v0.4.x).
 
 ### Include Path Rename (Done)
 
@@ -216,7 +211,7 @@ from the generic library to the test runner protocol.
 ```
 embedded-bridge          (generic receivers: MemoryTracker, CrashDetector)
     ↑                     format-agnostic, plain value APIs
-pio-test-runner          (ETST protocol → parses lines → feeds values)
+embedded-test-runner     (ETST protocol → parses lines → feeds values)
     ↑                     owns protocol, adapts to generic receivers
 consumer firmware        (emits ETST: markers via C++ headers)
 ```
@@ -234,7 +229,7 @@ tracker.record_before(test_name="Suite/test1", free=200000, min_free=180000)
 tracker.record_after(test_name="Suite/test1", free=199000, delta=-1000, min_free=179000)
 ```
 
-The protocol parsing moves to pio-test-runner's router, which calls these
+The protocol parsing moves to embedded-test-runner's router, which calls these
 methods after parsing `ETST:MEM:*` lines. embedded-bridge knows nothing
 about `ETST:`, making it reusable for embedded-trace production profiling
 with different wire formats.
