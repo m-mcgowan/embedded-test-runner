@@ -32,6 +32,8 @@ lib_deps =
 
 See [tests/integration/platformio.ini](tests/integration/platformio.ini) for a complete working example with board config, shared sections, and multi-board support.
 
+> **`test_framework = custom` is required.** Setting it to `doctest` (PIO's built-in) bypasses this library entirely — you get no orchestration, no sleep/wake handling, no robust output parsing, no crash detection, and no env-var forwarding. You'll also be exposed to upstream PIO parser bugs that this library works around, including the `not enough values to unpack (expected 2, got 1)` crash that fires on any benign output ending in `:` (e.g. `Chip Info:` emitted by Arduino-ESP32 boot). The `custom` framework is the only path that loads `test/test_custom_runner.py` and wires `EmbeddedTestRunner` into PIO.
+
 **2.** Copy [examples/test_custom_runner.py](examples/test_custom_runner.py) to `test/test_custom_runner.py`. This shim auto-installs the Python packages on first `pio test` — no pip install needed.
 
 **3.** Create `test/main.cpp` (entry point for the test firmware):
