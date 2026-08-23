@@ -229,7 +229,7 @@ inline void apply_compile_time_filters(::doctest::Context& ctx) {
  * Iterates doctest's internal test registry and sorts by file/line
  * (matching doctest's default order_by="file" execution order).
  */
-inline std::vector<const char*> get_test_names() {
+inline std::vector<const ::doctest::detail::TestCase*> sorted_registry() {
     // Collect pointers to sort — same approach doctest uses internally
     std::vector<const ::doctest::detail::TestCase*> tests;
     for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
@@ -242,6 +242,11 @@ inline std::vector<const char*> get_test_names() {
             if (res != 0) return res < 0;
             return a->m_line < b->m_line;
         });
+    return tests;
+}
+
+inline std::vector<const char*> get_test_names() {
+    auto tests = sorted_registry();
     std::vector<const char*> names;
     names.reserve(tests.size());
     for (const auto* tc : tests) {
@@ -264,21 +269,34 @@ inline void list_tests() {
 /**
  * @brief Resume tests after the named test.
  *
- * Finds the named test in the registry and uses doctest's "first" option
- * to skip all tests up to and including it. O(1) memory — no exclude string.
+ * Force-skips every test up to and including the resume point, in the same
+ * (file, line) order the host sees via ETST:LIST. O(1) extra memory — no
+ * exclude string, which could exhaust heap with 700+ test names.
+ *
+ * Implemented by setting `m_skip` rather than doctest's "first" option,
+ * because `first` is an *index into the tests that pass filters*
+ * (doctest compares it against `numTestCasesPassingFilters`), whereas the
+ * registry index here counts every registered test. Any skipped or
+ * filtered-out test before the resume point made those two spaces diverge,
+ * so `first` was set too high and silently dropped that many tests after the
+ * resume point — compounding across sleep/wake cycles until whole suites
+ * never ran. Marking `m_skip` sidesteps index arithmetic entirely and lets
+ * doctest's own filter chain do the counting, so it also composes correctly
+ * with filters and env requirements applied after this call.
  *
  * @param test_name  Exact name of the last completed test.
  * @return Number of tests skipped, or -1 if test_name not found.
  */
 inline int apply_resume_after(::doctest::Context& ctx, const char* test_name) {
-    auto names = get_test_names();
+    (void)ctx;  // no longer needs doctest options — see note above
+    auto tests = sorted_registry();
     Serial.printf("RESUME_AFTER: \"%s\" (%u tests registered)\n",
-                  test_name, (unsigned)names.size());
+                  test_name, (unsigned)tests.size());
 
     // Find the index of the resume test
     int resume_idx = -1;
-    for (size_t i = 0; i < names.size(); ++i) {
-        if (strcmp(names[i], test_name) == 0) {
+    for (size_t i = 0; i < tests.size(); ++i) {
+        if (strcmp(tests[i]->m_name, test_name) == 0) {
             resume_idx = static_cast<int>(i);
             break;
         }
@@ -290,12 +308,14 @@ inline int apply_resume_after(::doctest::Context& ctx, const char* test_name) {
         return -1;
     }
 
-    // Use doctest's "first" option to skip to the test after the resume point.
-    // This is O(1) memory vs the old approach of building a giant exclude string
-    // that could exhaust heap with 700+ test names.
+    // Everything up to and including the resume point already ran.
+    // m_skip is not part of the registry's set ordering — safe to const_cast
+    // (same approach as modify_skip()).
+    for (int i = 0; i <= resume_idx; ++i) {
+        const_cast<::doctest::detail::TestCase*>(tests[i])->m_skip = true;
+    }
     int skip = resume_idx + 1;
-    ctx.setOption("first", skip + 1);  // 1-indexed
-    Serial.printf("Skipping %d tests\n", skip);
+    Serial.printf("Skipping %d already-completed tests\n", skip);
     return skip;
 }
 
@@ -832,12 +852,11 @@ inline void run_cycle(const CommandResult& cmd_result) {
 
     if (cmd.should_run) {
         unsigned total = static_cast<unsigned>(get_test_names().size());
+        // RESUME_AFTER marks already-completed tests as m_skip, and env
+        // requirements above do the same, so count_passing_filters() already
+        // reflects both — no manual adjustment (which double-counted, and
+        // silently did nothing when run == skip_count).
         unsigned run = count_passing_filters();
-        // Adjust for RESUME_AFTER: skip_count tests are excluded by
-        // doctest's "first" option, not reflected in filter counts.
-        if (cmd.skip_count > 0 && run > static_cast<unsigned>(cmd.skip_count)) {
-            run -= static_cast<unsigned>(cmd.skip_count);
-        }
         unsigned skip = total - run;
         etst::print_test_count(total, skip, run);
 

@@ -12,9 +12,9 @@ from conftest import (
     MockTestSuite,
 )
 
-from etst.protocol import format_crc
+from etst.protocol import format_crc, msg_case_start, msg_counts
 from etst.ready_run_protocol import ProtocolState
-from etst.runner import EmbeddedTestRunner
+from etst.runner import EmbeddedTestRunner, TestStatus
 
 
 def _crc(content: str) -> str:
@@ -796,3 +796,63 @@ class TestIntegration:
         errored = [c for c in runner.test_suite.cases if c.status == MockTestStatus.ERRORED]
         assert len(errored) == 1
         assert isinstance(errored[0].exception, RuntimeError)
+
+
+class TestUnderRunDetection:
+    """A session that executes fewer tests than promised must fail.
+
+    Silently running a subset and exiting 0 hides coverage loss: observed in
+    the field as whole suites going unrun for months behind a green result,
+    because a resume cycle dropped them.
+    """
+
+    @staticmethod
+    def _runner_with(expected: int, ran: list[str]):
+        suite = MockTestSuite()
+        runner = EmbeddedTestRunner(suite, MockProjectConfig(), MockTestRunnerOptions())
+        p = runner.protocol
+        p.feed(format_crc("ETST:READY"))
+        p.command_sent()
+        p.feed(msg_counts(total=expected, skip=0, run=expected))
+        for name in ran:
+            p.feed(msg_case_start("Suite", name))
+        return runner, suite
+
+    @staticmethod
+    def _errored(suite):
+        return [c for c in suite.cases if getattr(c, "status", None) == TestStatus.ERRORED]
+
+    def test_flags_shortfall(self):
+        runner, suite = self._runner_with(expected=5, ran=["a", "b"])
+        runner._check_for_under_run()
+        errs = self._errored(suite)
+        assert len(errs) == 1
+        assert "3 of 5 tests never ran" in errs[0].message
+
+    def test_silent_when_all_ran(self):
+        runner, suite = self._runner_with(expected=2, ran=["a", "b"])
+        runner._check_for_under_run()
+        assert self._errored(suite) == []
+
+    def test_silent_when_more_ran_than_expected(self):
+        """Subcases can inflate the observed count — not an under-run."""
+        runner, suite = self._runner_with(expected=2, ran=["a", "b", "c"])
+        runner._check_for_under_run()
+        assert self._errored(suite) == []
+
+    def test_silent_when_device_never_reported_counts(self):
+        """No COUNTS means nothing to compare against — don't invent a failure."""
+        suite = MockTestSuite()
+        runner = EmbeddedTestRunner(suite, MockProjectConfig(), MockTestRunnerOptions())
+        runner._check_for_under_run()
+        assert self._errored(suite) == []
+
+    def test_detects_the_observed_real_world_shortfall(self):
+        """The case from the field: 148 ran of 186 expected, reported PASSED."""
+        runner, suite = self._runner_with(
+            expected=186, ran=[f"t{i}" for i in range(148)]
+        )
+        runner._check_for_under_run()
+        errs = self._errored(suite)
+        assert len(errs) == 1
+        assert "38 of 186 tests never ran" in errs[0].message

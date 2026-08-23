@@ -1,6 +1,6 @@
 """Tests for ReadyRunProtocol."""
 
-from etst.protocol import format_crc
+from etst.protocol import format_crc, msg_counts
 from etst.ready_run_protocol import ProtocolState, ReadyRunProtocol
 
 
@@ -289,3 +289,60 @@ class TestReadyRunProtocol:
         p.feed(_crc('ETST:CASE:START suite="S" name="test_c"'))
         p.feed(_crc("ETST:DONE"))
         assert p.completed_tests == ["S/test_a", "S/sleep_test", "S/test_b", "S/test_c"]
+
+
+class TestExpectedRunLatch:
+    """expected_run latches the FIRST cycle's runnable count.
+
+    Later cycles are resumes whose counts shrink as completed tests are
+    excluded, so only the first cycle describes the whole session. Used to
+    detect a session that silently under-runs.
+    """
+
+    @staticmethod
+    def _running() -> ReadyRunProtocol:
+        """A protocol driven through the handshake into RUNNING.
+
+        COUNTS is only processed while RUNNING, matching the real device
+        sequence (READY -> command -> COUNTS).
+        """
+        p = ReadyRunProtocol()
+        p.feed(_crc("ETST:READY"))
+        p.command_sent()
+        return p
+
+    def test_unset_before_any_counts(self):
+        assert ReadyRunProtocol().expected_run == 0
+
+    def test_latches_first_counts(self):
+        p = self._running()
+        p.feed(msg_counts(total=199, skip=13, run=186))
+        assert p.expected_run == 186
+
+    def test_later_counts_do_not_overwrite(self):
+        p = self._running()
+        p.feed(msg_counts(total=199, skip=13, run=186))
+        # A resume cycle reports fewer runnable tests...
+        p.feed(msg_counts(total=199, skip=190, run=9))
+        # ...but the session is still expected to run the original 186.
+        assert p.expected_run == 186
+        assert p.test_run == 9
+
+    def test_survives_reset_between_cycles(self):
+        p = self._running()
+        p.feed(msg_counts(total=199, skip=13, run=186))
+        p.reset()  # per-cycle reset
+        assert p.expected_run == 186
+        assert p.test_run == 0
+
+    def test_cleared_by_reset_all(self):
+        p = self._running()
+        p.feed(msg_counts(total=199, skip=13, run=186))
+        p.reset_all()
+        assert p.expected_run == 0
+
+    def test_first_cycle_running_nothing_still_latches(self):
+        """A first cycle that legitimately runs nothing latches at 0."""
+        p = self._running()
+        p.feed(msg_counts(total=5, skip=5, run=0))
+        assert p.expected_run == 0

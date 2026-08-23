@@ -5,6 +5,37 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Fixed
+- **`RESUME_AFTER` silently dropped tests** (high severity — sessions could
+  skip whole suites and still exit `PASSED`). `apply_resume_after()` computed
+  the resume point as an index over *all registered tests*, then passed it to
+  doctest's `first` option, which is an index over *tests that pass filters*
+  (doctest compares it against `numTestCasesPassingFilters`). Any
+  `doctest::skip()`-attributed or filtered-out test before the resume point
+  made the two spaces diverge, so `first` was set too high and silently
+  excluded that many tests *after* the resume point. The error compounded
+  across sleep/wake cycles; when the inflated index passed the end of the
+  list, a cycle ran nothing at all. Observed in the field: 148 of 186 tests
+  ran, 8 of 35 suites never started, result reported `PASSED`.
+
+  Resume is now implemented by force-setting `m_skip` on the already-completed
+  prefix instead of using `first`. This removes the index arithmetic entirely,
+  lets doctest's own filter chain do the counting, and composes correctly with
+  filters and env requirements applied after the resume is processed.
+
+- **Under-run is now a failure, not a pass.** The runner compares tests
+  actually executed against the runnable count the device reported on its
+  first cycle, and reports an `ERRORED` case (`runner/under_run`) when tests
+  went missing. The summary line also shows the shortfall
+  (`N ran of M expected | K NEVER RAN`). A run that cannot account for its
+  own tests no longer looks green.
+
+- **`ETST:COUNTS` `run`/`skip` were wrong during resume cycles.** The count
+  applied a manual `skip_count` adjustment that double-counted once resume
+  skips became visible to `count_passing_filters()`, and silently did nothing
+  in the `run == skip_count` case. The adjustment is removed; the reported
+  counts now reflect what will actually run.
+
 ## [0.3.1] — 2026-05-04
 
 ### Fixed

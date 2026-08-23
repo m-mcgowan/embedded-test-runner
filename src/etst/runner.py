@@ -657,6 +657,7 @@ class EmbeddedTestRunner(_BaseRunner):
         finally:
             self._close_serial()
             self._ensure_test_results()
+            self._check_for_under_run()
             self._print_summary()
             if not self.test_suite.is_finished():
                 self.test_suite.on_finish()
@@ -1159,6 +1160,40 @@ class EmbeddedTestRunner(_BaseRunner):
             exception=exc,
         ))
 
+    def _check_for_under_run(self):
+        """Fail the run if fewer tests executed than the device said it would.
+
+        A session that quietly executes a subset and exits 0 is worse than a
+        failing one: the gap is invisible in the summary, so coverage silently
+        erodes. Compares tests actually seen (ETST:CASE:START) against the
+        runnable count the device reported on its first cycle.
+
+        Reports ERRORED rather than staying silent even though the missing
+        tests may well have passed — "we don't know" is a failure, not a pass.
+        """
+        if TestCase is None or TestStatus is None:
+            return
+        expected = self.protocol.expected_run
+        if expected <= 0:
+            return  # device never reported counts; nothing to compare against
+        ran = len(self.protocol.completed_tests)
+        if ran >= expected:
+            return
+
+        missing = expected - ran
+        msg = (
+            f"{missing} of {expected} tests never ran "
+            f"({ran} executed). Tests were lost — most likely by "
+            f"resume/segmentation across a sleep cycle — so this run does not "
+            f"prove what it appears to."
+        )
+        _secho(f"[runner] ERROR: {msg}", fg="red", err=True)
+        self.test_suite.add_case(TestCase(
+            name="runner/under_run",
+            status=TestStatus.ERRORED,
+            message=msg,
+        ))
+
     # ------------------------------------------------------------------
     # Summary reporting
     # ------------------------------------------------------------------
@@ -1182,11 +1217,17 @@ class EmbeddedTestRunner(_BaseRunner):
         failed = list(self._test_failures.keys())
         passed = [t for t in completed if t not in self._test_failures]
         if len(completed) > 0:
-            parts = [f"{len(completed)} ran"]
+            expected = self.protocol.expected_run
+            ran = f"{len(completed)} ran"
+            if expected > 0 and len(completed) < expected:
+                ran += f" of {expected} expected"
+            parts = [ran]
             if passed:
                 parts.append(f"{len(passed)} passed")
             if failed:
                 parts.append(f"{len(failed)} failed")
+            if expected > 0 and len(completed) < expected:
+                parts.append(f"{expected - len(completed)} NEVER RAN")
             _echo("")
             _echo(f"[runner] {' | '.join(parts)}")
 

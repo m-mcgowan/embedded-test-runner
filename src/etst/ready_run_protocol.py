@@ -55,6 +55,8 @@ class ReadyRunProtocol:
         self._test_total: int = 0
         self._test_skip: int = 0
         self._test_run: int = 0
+        self._expected_run: int = 0
+        self._expected_run_latched: bool = False
         self._busy_until: float = 0  # monotonic time when busy period ends
         self._accumulated_args: list[str] = []
         self._error_code: str = ""
@@ -130,6 +132,13 @@ class ReadyRunProtocol:
             self._test_total = int(payload.get("total", 0))
             self._test_skip = int(payload.get("skip", 0))
             self._test_run = int(payload.get("run", 0))
+            # Latch the first cycle's runnable count as the expected total for
+            # the whole session. Later cycles are resumes, whose counts shrink
+            # as completed tests are excluded, so only the first is the full
+            # picture. Used to detect a session that silently under-runs.
+            if not self._expected_run_latched:
+                self._expected_run = self._test_run
+                self._expected_run_latched = True
 
         # Check for sleep or restart sentinel
         elif parsed.tag == "SLEEP":
@@ -248,6 +257,15 @@ class ReadyRunProtocol:
         return self._test_run
 
     @property
+    def expected_run(self) -> int:
+        """Runnable tests reported by the device's first cycle.
+
+        The number the whole session is expected to execute. 0 if no COUNTS
+        was ever received (e.g. a device that never reported).
+        """
+        return self._expected_run
+
+    @property
     def completed_tests(self) -> list[str]:
         """Test names seen across all cycles (for resume-after exclude)."""
         return list(self._completed_tests)
@@ -290,3 +308,8 @@ class ReadyRunProtocol:
         """Full reset including completed test history."""
         self.reset()
         self._completed_tests.clear()
+        # Session-scoped, like completed_tests: survives reset() between
+        # cycles (the first cycle's count is the session's expected total)
+        # but is cleared for a genuinely fresh session.
+        self._expected_run = 0
+        self._expected_run_latched = False
