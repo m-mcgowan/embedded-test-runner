@@ -1181,11 +1181,19 @@ class EmbeddedTestRunner(_BaseRunner):
             return
 
         missing = expected - ran
+        # Do NOT presume a cause: this fires for a device that disconnected
+        # mid-run (flaky USB-CDC, power loss) just as readily as for a
+        # resume/segmentation gap, and we cannot tell which from here. Point at
+        # both so whoever reads it checks the log rather than chasing the wrong
+        # one. A prior serial/disconnect error in the same run is the tell for
+        # the former; a clean tail that simply stops short points at the latter.
         msg = (
-            f"{missing} of {expected} tests never ran "
-            f"({ran} executed). Tests were lost — most likely by "
-            f"resume/segmentation across a sleep cycle — so this run does not "
-            f"prove what it appears to."
+            f"{missing} of {expected} tests never ran ({ran} executed). "
+            f"The run stopped short of what the device said it would run, so it "
+            f"does not prove what it appears to. Likely a device disconnect "
+            f"mid-run (check for an earlier serial/port error) or lost "
+            f"resume/segmentation across a sleep cycle — inspect the log to tell "
+            f"which."
         )
         _secho(f"[runner] ERROR: {msg}", fg="red", err=True)
         self.test_suite.add_case(TestCase(
