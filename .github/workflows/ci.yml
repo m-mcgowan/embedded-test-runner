@@ -43,5 +43,8 @@ jobs:
       - name: Build and run native C++ tests
         run: |
           cd tests
-          g++ -std=c++17 -Idoctest test_doctest_internals.cpp -o test_doctest_internals
+          # -I../include so the harness can include the real
+          # etst/doctest/resume.h rather than a copy of it.
+          g++ -std=c++17 -Idoctest -I../include \
+            test_doctest_internals.cpp -o test_doctest_internals
           ./test_doctest_internals -s

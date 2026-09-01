@@ -49,6 +49,7 @@
 #include <cstring>
 #include <vector>
 #include <doctest.h>
+#include "etst/doctest/resume.h"   // sorted_registry(), select_resume_after()
 #include <Arduino.h>
 #include "etst/test_runner.h"
 #include "etst/env.h"
@@ -223,27 +224,9 @@ inline void apply_compile_time_filters(::doctest::Context& ctx) {
 #endif
 }
 
-/**
- * @brief Get registered test names in doctest execution order.
- *
- * Iterates doctest's internal test registry and sorts by file/line
- * (matching doctest's default order_by="file" execution order).
- */
-inline std::vector<const ::doctest::detail::TestCase*> sorted_registry() {
-    // Collect pointers to sort — same approach doctest uses internally
-    std::vector<const ::doctest::detail::TestCase*> tests;
-    for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
-        tests.push_back(&tc);
-    }
-    // Sort by file then line (matches doctest's fileOrderComparator)
-    std::sort(tests.begin(), tests.end(),
-        [](const ::doctest::detail::TestCase* a, const ::doctest::detail::TestCase* b) {
-            const int res = a->m_file.compare(b->m_file);
-            if (res != 0) return res < 0;
-            return a->m_line < b->m_line;
-        });
-    return tests;
-}
+// sorted_registry() lives in resume.h alongside select_resume_after(), so the
+// registry ordering and the resume selection that depends on it stay together
+// and stay native-testable.
 
 inline std::vector<const char*> get_test_names() {
     auto tests = sorted_registry();
@@ -289,32 +272,20 @@ inline void list_tests() {
  */
 inline int apply_resume_after(::doctest::Context& ctx, const char* test_name) {
     (void)ctx;  // no longer needs doctest options — see note above
-    auto tests = sorted_registry();
+
+    // The selection itself is in resume.h, which carries no Arduino or ESP
+    // dependency so the native harness can exercise this exact code. This
+    // wrapper is only the protocol logging around it.
     Serial.printf("RESUME_AFTER: \"%s\" (%u tests registered)\n",
-                  test_name, (unsigned)tests.size());
+                  test_name, (unsigned)sorted_registry().size());
 
-    // Find the index of the resume test
-    int resume_idx = -1;
-    for (size_t i = 0; i < tests.size(); ++i) {
-        if (strcmp(tests[i]->m_name, test_name) == 0) {
-            resume_idx = static_cast<int>(i);
-            break;
-        }
-    }
-
-    if (resume_idx < 0) {
+    const int skip = select_resume_after(test_name);
+    if (skip < 0) {
         Serial.printf("WARNING: test \"%s\" not found — running all tests\n",
                        test_name);
         return -1;
     }
 
-    // Everything up to and including the resume point already ran.
-    // m_skip is not part of the registry's set ordering — safe to const_cast
-    // (same approach as modify_skip()).
-    for (int i = 0; i <= resume_idx; ++i) {
-        const_cast<::doctest::detail::TestCase*>(tests[i])->m_skip = true;
-    }
-    int skip = resume_idx + 1;
     Serial.printf("Skipping %d already-completed tests\n", skip);
     return skip;
 }

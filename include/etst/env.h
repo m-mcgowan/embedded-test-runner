@@ -207,11 +207,15 @@ struct require_env {
 
     require_env(const char* k, const char* v = nullptr) : key(k), value(v) {}
 
-    void fill(doctest::detail::TestCase& tc) const {
+    // Fully qualified as ::doctest — unqualified `doctest` here resolves to
+    // etst::doctest (the runner's own namespace) whenever a header declaring it
+    // has been included first, which turns this into an "'etst::doctest::detail'
+    // has not been declared" error that depends only on include order.
+    void fill(::doctest::detail::TestCase& tc) const {
         detail::env_requirements().push_back({tc.m_name, tc.m_test_suite, key, value});
     }
 
-    void fill(doctest::detail::TestSuite&) const {
+    void fill(::doctest::detail::TestSuite&) const {
         // Suite-level requirements: future extension
     }
 };

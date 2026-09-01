@@ -7,16 +7,29 @@
  * - modifying m_skip does not break std::set ordering
  * - glob_match works correctly
  * - tokenize_args handles quoting and whitespace
+ * - RESUME_AFTER selects exactly the completed prefix, and does NOT drop tests
+ *   after the resume point when skip-attributed tests precede it (the
+ *   index-space defect); these exercise the real resume.h, not a copy
  *
- * Build and run (from tests/ directory):
+ * Build and run (from tests/ directory). `-I../include` is required so the
+ * resume tests can include the real etst/doctest/resume.h:
  *   c++ -std=c++17 -Iintegration/.pio/libdeps/esp32s3/doctest/doctest \
- *       test_doctest_internals.cpp -o test_doctest_internals
+ *       -I../include test_doctest_internals.cpp -o test_doctest_internals
  *   ./test_doctest_internals
  */
 
 // We need DOCTEST_CONFIG_IMPLEMENT to access getRegisteredTests()
 #define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest.h>
+
+// The REAL production resume selection, not a copy. resume.h is deliberately
+// free of Arduino/ESP dependencies so this harness can include it; everything
+// else in this file has to mirror runner.h by hand. Must come after the
+// DOCTEST_CONFIG_IMPLEMENT include above, since it uses getRegisteredTests().
+#include <etst/doctest/resume.h>
+
+#include <utility>
+#include <vector>
 
 // Stub Arduino String class for host builds
 #ifndef ARDUINO
@@ -475,6 +488,200 @@ TEST_CASE("mixed skip and doctest flags preserve order") {
 }
 
 }  // TEST_SUITE extract_etst_flags
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESUME_AFTER selection
+//
+// Unlike everything above, these exercise the REAL production code: resume.h is
+// dependency-light on purpose (doctest + <algorithm>/<cstring>/<vector>, no
+// Arduino, no ESP, no Serial), so it is included rather than copied. The rest of
+// this file mirrors runner.h by hand, which is a drift risk these tests avoid.
+//
+// What is under test is the SELECTION — which tests a resume excludes. That is
+// exactly where the defect lived: apply_resume_after() used to compute an index
+// over ALL registered tests and hand it to doctest's "first" option, which is an
+// index over tests that PASS FILTERS (compared against
+// numTestCasesPassingFilters). Every skip-attributed or filtered-out test before
+// the resume point made those two spaces diverge, pushing "first" too high and
+// silently dropping that many tests AFTER the resume point — compounding across
+// sleep/wake cycles until whole suites never ran, while the run reported PASSED.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Fixture cases, in declaration order == (file, line) order == registry order.
+// The two skip-attributed cases sit BEFORE the resume point deliberately: that
+// is the precise condition under which the two index spaces diverge. Without
+// them these tests would pass against the old buggy implementation too.
+TEST_CASE("_resume_before")                        { /* fixture */ }
+TEST_CASE("_resume_skipped_a" * doctest::skip())   { FAIL("should not run"); }
+TEST_CASE("_resume_skipped_b" * doctest::skip())   { FAIL("should not run"); }
+TEST_CASE("_resume_point")                         { /* fixture */ }
+TEST_CASE("_resume_after_1")                       { /* fixture */ }
+TEST_CASE("_resume_after_2")                       { /* fixture */ }
+
+TEST_SUITE("resume_after") {
+
+// select_resume_after() mutates m_skip on the live registry, which would
+// otherwise change which of THIS harness's own tests run afterwards. Snapshot
+// and restore around every call.
+using SkipSnapshot = std::vector<std::pair<const ::doctest::detail::TestCase*, bool>>;
+
+static SkipSnapshot snapshot_skips() {
+    SkipSnapshot s;
+    for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
+        s.emplace_back(&tc, tc.m_skip);
+    }
+    return s;
+}
+
+static void restore_skips(const SkipSnapshot& s) {
+    for (const auto& entry : s) {
+        const_cast< ::doctest::detail::TestCase*>(entry.first)->m_skip = entry.second;
+    }
+}
+
+static int index_of(const char* name) {
+    auto tests = etst::doctest::sorted_registry();
+    for (size_t i = 0; i < tests.size(); ++i) {
+        if (strcmp(tests[i]->m_name, name) == 0) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+TEST_CASE("the fixture actually reproduces the index-space divergence") {
+    // A guard on the tests below, not a property of the production code. If a
+    // future edit moves or unskips the fixture cases, the regression tests would
+    // silently stop testing the thing that broke — this fails loudly instead.
+    const int before  = index_of("_resume_before");
+    const int skipped = index_of("_resume_skipped_a");
+    const int point   = index_of("_resume_point");
+    REQUIRE(before >= 0);
+    REQUIRE(skipped > before);
+    REQUIRE(point > skipped);
+
+    // Count how many tests up to and including the resume point doctest would
+    // count toward numTestCasesPassingFilters (i.e. are not skip-attributed).
+    auto tests = etst::doctest::sorted_registry();
+    int runnable_prefix = 0;
+    for (int i = 0; i <= point; ++i) {
+        if (!tests[i]->m_skip) runnable_prefix++;
+    }
+
+    // The two spaces MUST disagree here, by exactly the number of
+    // skip-attributed cases in the prefix. This difference is what the old
+    // `first`-based implementation added to the boundary, dropping that many
+    // tests after the resume point.
+    const int registry_prefix = point + 1;
+    CHECK(runnable_prefix < registry_prefix);
+    CHECK(registry_prefix - runnable_prefix >= 2);
+}
+
+TEST_CASE("resume skips exactly the completed prefix") {
+    auto saved = snapshot_skips();
+    const int point = index_of("_resume_point");
+    REQUIRE(point >= 0);
+
+    const int skipped = etst::doctest::select_resume_after("_resume_point");
+    CHECK(skipped == point + 1);
+
+    auto tests = etst::doctest::sorted_registry();
+    bool prefix_all_skipped = true;
+    for (int i = 0; i <= point; ++i) {
+        if (!tests[i]->m_skip) prefix_all_skipped = false;
+    }
+    CHECK(prefix_all_skipped);
+
+    restore_skips(saved);
+}
+
+TEST_CASE("tests after the resume point still run despite skipped tests before it") {
+    // THE REGRESSION. Under the old `first`-based selection the boundary landed
+    // two positions too far (one per skip-attributed fixture case above), so
+    // these two would have been excluded and never reported.
+    auto saved = snapshot_skips();
+
+    const bool before_1 = [] {
+        for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
+            if (strcmp(tc.m_name, "_resume_after_1") == 0) return (bool)tc.m_skip;
+        }
+        return true;
+    }();
+    REQUIRE_FALSE(before_1);   // fixture sanity: it is runnable to begin with
+
+    etst::doctest::select_resume_after("_resume_point");
+
+    bool after_1_skipped = true, after_2_skipped = true;
+    for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
+        if (strcmp(tc.m_name, "_resume_after_1") == 0) after_1_skipped = tc.m_skip;
+        if (strcmp(tc.m_name, "_resume_after_2") == 0) after_2_skipped = tc.m_skip;
+    }
+    CHECK_FALSE(after_1_skipped);
+    CHECK_FALSE(after_2_skipped);
+
+    restore_skips(saved);
+}
+
+TEST_CASE("resume leaves already-skipped tests after the point alone") {
+    // Resuming must not resurrect a doctest::skip()-attributed test that
+    // happens to sit after the resume point — it only marks the prefix.
+    auto saved = snapshot_skips();
+
+    etst::doctest::select_resume_after("_resume_before");
+
+    bool a_skipped = false, b_skipped = false;
+    for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
+        if (strcmp(tc.m_name, "_resume_skipped_a") == 0) a_skipped = tc.m_skip;
+        if (strcmp(tc.m_name, "_resume_skipped_b") == 0) b_skipped = tc.m_skip;
+    }
+    CHECK(a_skipped);
+    CHECK(b_skipped);
+
+    restore_skips(saved);
+}
+
+TEST_CASE("an unknown resume point changes nothing and reports -1") {
+    // The host must be able to tell "resume point vanished" from "resumed at 0",
+    // and a not-found name must not skip anything — the device runs everything.
+    auto saved = snapshot_skips();
+
+    size_t skipped_before = 0;
+    for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
+        if (tc.m_skip) skipped_before++;
+    }
+
+    CHECK(etst::doctest::select_resume_after("_no_such_test_name") == -1);
+
+    size_t skipped_after = 0;
+    for (const auto& tc : ::doctest::detail::getRegisteredTests()) {
+        if (tc.m_skip) skipped_after++;
+    }
+    CHECK(skipped_after == skipped_before);
+
+    restore_skips(saved);
+}
+
+TEST_CASE("sorted_registry is in (file, line) order and stable") {
+    // The host addresses tests by index via ETST:LIST, so this ordering is a
+    // wire contract, not an implementation detail.
+    auto a = etst::doctest::sorted_registry();
+    auto b = etst::doctest::sorted_registry();
+    REQUIRE(a.size() == b.size());
+
+    bool identical = true;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i] != b[i]) identical = false;
+    }
+    CHECK(identical);
+
+    bool ordered = true;
+    for (size_t i = 1; i < a.size(); ++i) {
+        const int cmp = a[i - 1]->m_file.compare(a[i]->m_file);
+        if (cmp > 0) ordered = false;
+        else if (cmp == 0 && a[i - 1]->m_line > a[i]->m_line) ordered = false;
+    }
+    CHECK(ordered);
+}
+
+}  // TEST_SUITE resume_after
 
 int main(int argc, char** argv) {
     doctest::Context context;

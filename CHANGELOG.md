@@ -36,6 +36,37 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
   in the `run == skip_count` case. The adjustment is removed; the reported
   counts now reflect what will actually run.
 
+- **`etst::require_env` broke on include order.** `env.h` referred to
+  `doctest::detail::TestCase` unqualified from inside `namespace etst`, which
+  resolves to `etst::doctest` — the runner's own namespace — as soon as any
+  header declaring it is included first, failing with
+  `'etst::doctest::detail' has not been declared`. Now spelled `::doctest::`.
+  Latent until `resume.h` was introduced; it would have bitten any consumer
+  that included a runner header before `env.h`.
+
+### Added
+- **`etst/doctest/resume.h`** — the resume-point selection (`sorted_registry()`,
+  `select_resume_after()`) extracted out of `runner.h` into a header carrying no
+  Arduino or ESP dependency, so the native C++ harness can test the real code
+  instead of a hand-mirrored copy. `runner.h` keeps `apply_resume_after()`
+  unchanged as the logging wrapper, so consumers need no changes.
+
+- **Native regression coverage for resume selection**
+  (`tests/test_doctest_internals.cpp`, six cases, run in CI). Fixture cases
+  place `doctest::skip()`-attributed tests deliberately *before* the resume
+  point — the exact condition under which the two index spaces diverged — and
+  assert that tests after the resume point still run, that the completed prefix
+  is skipped exactly, that already-skipped tests after the point are untouched,
+  that an unknown resume point reports `-1` and mutates nothing, and that
+  `sorted_registry()` holds its (file, line) wire ordering. A seventh case
+  guards the fixture itself, failing loudly if a future edit stops reproducing
+  the divergence.
+
+  Verified discriminating: rebuilding the harness against a shadow `resume.h`
+  carrying the old `first`-based selection fails exactly one case
+  (`tests after the resume point still run despite skipped tests before it`)
+  by exactly two tests — one per skip-attributed fixture case.
+
 ## [0.3.1] — 2026-05-04
 
 ### Fixed
