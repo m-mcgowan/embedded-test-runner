@@ -5,6 +5,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-09-01
+
 ### Fixed
 - **`RESUME_AFTER` silently dropped tests** (high severity — sessions could
   skip whole suites and still exit `PASSED`). `apply_resume_after()` computed
