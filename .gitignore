@@ -10,6 +10,9 @@ build/
 # Compiled native test binaries
 tests/test_doctest_internals
 
+# doctest header, fetched on demand (CI curls it; see .github/workflows/ci.yml)
+tests/doctest/
+
 # Development notes (not shipped)
 BUG_*.md
 docs/BUG-*.md
