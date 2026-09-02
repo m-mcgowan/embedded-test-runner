@@ -5,6 +5,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Added
+- **`scripts/release.sh --publish <version>`** — finishes a release left local
+  by `--no-push`: pushes `main` and the tag, then creates the GitHub release
+  from the CHANGELOG section for that version. `--no-push` previously exited
+  with no way back into the script, so the publish half had to be retyped by
+  hand — which is how v0.3.2's GitHub release was actually created. The pushes
+  are no-ops if the tag went out by hand first, and the run refuses if the
+  GitHub release already exists.
+
 ## [0.3.2] — 2026-09-01
 
 ### Fixed
