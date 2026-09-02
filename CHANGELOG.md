@@ -44,6 +44,18 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
   Latent until `resume.h` was introduced; it would have bitten any consumer
   that included a runner header before `env.h`.
 
+### Changed
+- **`scripts/release.sh` releases one repo at a time.** It previously released
+  embedded-bridge and pio-test-runner in lockstep under a single version, which
+  the two repos had already outgrown (bridge at v0.2.0, runner at v0.3.1) and
+  which hard-failed whenever one repo had an empty `[Unreleased]` section. Each
+  repo now carries its own version and is released on its own; `--repo <dir>`
+  picks the target. The dependency is still enforced, but as a check rather
+  than a chain: releasing pio-test-runner stops if embedded-bridge has commits
+  past its own last release tag, and says nothing when it does not. Also adds
+  `--no-push`, which does the local bump/commit/tag and prints the publish
+  commands instead of pushing.
+
 ### Added
 - **`etst/doctest/resume.h`** — the resume-point selection (`sorted_registry()`,
   `select_resume_after()`) extracted out of `runner.h` into a header carrying no

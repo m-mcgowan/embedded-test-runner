@@ -1,25 +1,42 @@
 #!/usr/bin/env bash
 #
-# Release both embedded-bridge and pio-test-runner.
+# Release one repo: version bump, CHANGELOG promotion, tag, push, GH release.
 #
 # Usage:
-#   scripts/release.sh <version>        # e.g. scripts/release.sh 0.2.0
-#   scripts/release.sh -n <version>     # dry run — print what would happen
+#   scripts/release.sh <version>              # e.g. scripts/release.sh 0.3.2
+#   scripts/release.sh -n <version>           # dry run — print what would happen
+#   scripts/release.sh --no-push <version>    # bump + commit + tag locally only
+#   scripts/release.sh --repo ../embedded-bridge <version>
+#
+# Options:
+#   -n, --dry-run       Print each step without changing anything.
+#       --no-push       Do the local work (bump, commit, tag) but skip the push
+#                       and the GitHub release. Prints the commands to finish.
+#       --repo <dir>    Repo to release. Defaults to this script's own repo
+#                       (pio-test-runner).
+#
+# Each repo carries its own version — they are NOT released in lockstep.
+#
+# pio-test-runner depends on embedded-bridge, so releasing pio-test-runner also
+# checks that embedded-bridge has nothing unreleased. A bridge with no commits
+# since its own last release tag is skipped silently — the common case, where
+# all the changes were local to this repo. Unreleased bridge commits stop the
+# release, because a pio-test-runner tag would then pin a bridge that no
+# release describes: release embedded-bridge first
+# (--repo ../embedded-bridge), then pio-test-runner.
 #
 # Prerequisites:
-#   - Both repos clean, on main, up to date with origin
-#   - CHANGELOG.md [Unreleased] section has content in both repos
-#   - gh CLI authenticated
-#
-# The script releases embedded-bridge first (pio-test-runner depends on it),
-# then pio-test-runner.
+#   - Target repo clean, on main, in sync with origin/main
+#   - CHANGELOG.md [Unreleased] section has content
+#   - gh CLI authenticated (not needed with --no-push)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PTR_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-EB_DIR="$(cd "$PTR_DIR/../embedded-bridge" && pwd)"
+SELF_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 DRY_RUN=false
+NO_PUSH=false
+REPO_DIR=""
 TODAY="$(date +%Y-%m-%d)"
 
 # --- Helpers ----------------------------------------------------------------
@@ -36,82 +53,114 @@ run() {
     fi
 }
 
+usage() {
+    sed -n '3,32p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-1}"
+}
+
 # --- Argument parsing -------------------------------------------------------
 
-if [[ "${1:-}" == "-n" ]]; then
-    DRY_RUN=true
-    shift
-fi
+VERSION=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--dry-run) DRY_RUN=true; shift ;;
+        --no-push)    NO_PUSH=true; shift ;;
+        --repo)       REPO_DIR="${2:-}"; [[ -n "$REPO_DIR" ]] || die "--repo needs a directory"; shift 2 ;;
+        -h|--help)    usage 0 ;;
+        -*)           die "Unknown option: $1" ;;
+        *)            [[ -z "$VERSION" ]] || die "Unexpected argument: $1"; VERSION="$1"; shift ;;
+    esac
+done
 
-VERSION="${1:-}"
-[[ -n "$VERSION" ]] || die "Usage: scripts/release.sh [-n] <version>"
+[[ -n "$VERSION" ]] || usage
 TAG="v${VERSION}"
+
+REPO_DIR="${REPO_DIR:-$SELF_REPO}"
+[[ -d "$REPO_DIR" ]] || die "No such directory: $REPO_DIR"
+REPO_DIR="$(cd "$REPO_DIR" && pwd)"
+REPO_NAME="$(basename "$REPO_DIR")"
 
 # --- Preflight checks -------------------------------------------------------
 
-info "Preflight checks"
+info "Preflight checks — $REPO_NAME $TAG"
 
-# gh CLI
-command -v gh >/dev/null 2>&1 || die "gh CLI not found"
-gh auth status >/dev/null 2>&1 || die "gh CLI not authenticated — run 'gh auth login'"
+if ! $NO_PUSH; then
+    command -v gh >/dev/null 2>&1 || die "gh CLI not found (use --no-push to release locally)"
+    gh auth status >/dev/null 2>&1 || die "gh CLI not authenticated — run 'gh auth login'"
+fi
 
-check_repo() {
-    local dir="$1" name="$2"
-    step "Checking $name ($dir)"
+[[ -d "$REPO_DIR/.git" ]] || die "$REPO_NAME: not a git repo"
 
-    [[ -d "$dir/.git" ]] || die "$name: not a git repo"
+BRANCH="$(git -C "$REPO_DIR" branch --show-current)"
+[[ "$BRANCH" == "main" ]] || die "$REPO_NAME: on branch '$BRANCH', expected 'main'"
 
-    local branch
-    branch="$(git -C "$dir" branch --show-current)"
-    [[ "$branch" == "main" ]] || die "$name: on branch '$branch', expected 'main'"
+DIRTY="$(git -C "$REPO_DIR" diff --stat HEAD)"
+[[ -z "$DIRTY" ]] || die "$REPO_NAME: uncommitted changes:
+$DIRTY"
 
-    local status
-    status="$(git -C "$dir" diff --stat HEAD)"
-    [[ -z "$status" ]] || die "$name: uncommitted changes:\n$status"
+git -C "$REPO_DIR" fetch origin --quiet
+BEHIND="$(git -C "$REPO_DIR" rev-list HEAD..origin/main --count)"
+[[ "$BEHIND" == "0" ]] || die "$REPO_NAME: $BEHIND commits behind origin/main"
 
-    git -C "$dir" fetch origin --quiet
-    local behind
-    behind="$(git -C "$dir" rev-list HEAD..origin/main --count)"
-    [[ "$behind" == "0" ]] || die "$name: $behind commits behind origin/main"
+# Unpushed commits are only a problem if we are about to publish: --no-push
+# leaves the release commit unpushed by design, so any commits already
+# waiting to go out will ride along with it.
+if ! $NO_PUSH; then
+    AHEAD="$(git -C "$REPO_DIR" rev-list origin/main..HEAD --count)"
+    [[ "$AHEAD" == "0" ]] || die "$REPO_NAME: $AHEAD unpushed commits"
+fi
 
-    local ahead
-    ahead="$(git -C "$dir" rev-list origin/main..HEAD --count)"
-    [[ "$ahead" == "0" ]] || die "$name: $ahead unpushed commits"
+if git -C "$REPO_DIR" tag -l "$TAG" | grep -q "^${TAG}$"; then
+    die "$REPO_NAME: tag $TAG already exists"
+fi
 
-    # Tag must not already exist
-    if git -C "$dir" tag -l "$TAG" | grep -q "$TAG"; then
-        die "$name: tag $TAG already exists"
-    fi
+[[ -f "$REPO_DIR/CHANGELOG.md" ]] || die "$REPO_NAME: CHANGELOG.md not found"
+UNRELEASED="$(sed -n '/^## \[Unreleased\]/,/^## \[/{/^## \[/d;p;}' "$REPO_DIR/CHANGELOG.md" | grep -v '^$' || true)"
+[[ -n "$UNRELEASED" ]] || die "$REPO_NAME: CHANGELOG.md [Unreleased] section is empty"
 
-    # CHANGELOG.md must have content under [Unreleased]
-    [[ -f "$dir/CHANGELOG.md" ]] || die "$name: CHANGELOG.md not found"
-    local unreleased_content
-    unreleased_content="$(sed -n '/^## \[Unreleased\]/,/^## \[/{/^## \[/d;p;}' "$dir/CHANGELOG.md" | grep -v '^$' || true)"
-    [[ -n "$unreleased_content" ]] || die "$name: CHANGELOG.md [Unreleased] section is empty"
+[[ -f "$REPO_DIR/library.json" ]] || die "$REPO_NAME: library.json not found"
 
-    # library.json must exist
-    [[ -f "$dir/library.json" ]] || die "$name: library.json not found"
+# pio-test-runner depends on embedded-bridge. If the bridge sitting alongside
+# us has commits past its own last release tag, they would ship inside this
+# release undescribed by any bridge release. Silence is the expected outcome:
+# no bridge checkout, or a bridge already fully released, says nothing.
+check_bridge_released() {
+    local dir="$SELF_REPO/../embedded-bridge"
+    [[ -d "$dir/.git" ]] || return 0
+    dir="$(cd "$dir" && pwd)"
+
+    git -C "$dir" fetch origin --quiet 2>/dev/null || return 0
+
+    local last_tag
+    last_tag="$(git -C "$dir" tag -l 'v*' --sort=-creatordate | head -n1)"
+    [[ -n "$last_tag" ]] || return 0
+
+    local unreleased
+    unreleased="$(git -C "$dir" rev-list "${last_tag}..origin/main" --count)"
+    [[ "$unreleased" != "0" ]] || return 0
+
+    die "embedded-bridge: $unreleased commit(s) since $last_tag are unreleased.
+     Release embedded-bridge first:
+       scripts/release.sh --repo $dir <bridge-version>
+     Then release this repo."
 }
 
-check_repo "$EB_DIR"  "embedded-bridge"
-check_repo "$PTR_DIR" "pio-test-runner"
+if [[ "$REPO_DIR" == "$SELF_REPO" ]]; then
+    check_bridge_released
+fi
 
 info "Preflight OK"
 
-# --- Release a single repo --------------------------------------------------
+# --- Release ----------------------------------------------------------------
 
-release_repo() {
-    local dir="$1" name="$2"
+info "Releasing $REPO_NAME $TAG"
 
-    info "Releasing $name $TAG"
-
-    # 1. Update library.json version
-    step "Updating library.json version to $VERSION"
-    if ! $DRY_RUN; then
-        # Use python for reliable JSON editing
-        python3 -c "
-import json, sys
-path = '$dir/library.json'
+step "Updating library.json version to $VERSION"
+if ! $DRY_RUN; then
+    # Use python for reliable JSON editing
+    python3 -c "
+import json
+path = '$REPO_DIR/library.json'
 with open(path) as f:
     data = json.load(f)
 data['version'] = '$VERSION'
@@ -119,52 +168,53 @@ with open(path, 'w') as f:
     json.dump(data, f, indent=4)
     f.write('\n')
 "
-    fi
+fi
 
-    # 2. Update CHANGELOG.md — replace [Unreleased] header with versioned one
-    step "Updating CHANGELOG.md"
-    if ! $DRY_RUN; then
-        sed -i '' "s/^## \[Unreleased\]/## [Unreleased]\n\n## [$VERSION] — $TODAY/" "$dir/CHANGELOG.md"
-    fi
+step "Updating CHANGELOG.md"
+if ! $DRY_RUN; then
+    sed -i '' "s/^## \[Unreleased\]/## [Unreleased]\n\n## [$VERSION] — $TODAY/" "$REPO_DIR/CHANGELOG.md"
+fi
 
-    # 3. Extract release notes (content between version header and next ## heading)
-    local notes_file
-    notes_file="$(mktemp)"
-    sed -n "/^## \[$VERSION\]/,/^## \[/{/^## \[/d;p;}" "$dir/CHANGELOG.md" \
-        | sed '1{/^$/d;}' | sed '${/^$/d;}' > "$notes_file"
+# Release notes: content between the version header and the next ## heading.
+NOTES_FILE="$(mktemp)"
+trap 'rm -f "$NOTES_FILE"' EXIT
+sed -n "/^## \[$VERSION\]/,/^## \[/{/^## \[/d;p;}" "$REPO_DIR/CHANGELOG.md" \
+    | sed '1{/^$/d;}' | sed '${/^$/d;}' > "$NOTES_FILE"
 
-    # 4. Commit
-    step "Committing version bump"
-    run git -C "$dir" add CHANGELOG.md library.json
-    if ! $DRY_RUN; then
-        git -C "$dir" commit -m "release: $TAG"
-    fi
+step "Committing version bump"
+run git -C "$REPO_DIR" add CHANGELOG.md library.json
+if ! $DRY_RUN; then
+    git -C "$REPO_DIR" commit -m "release: $TAG"
+fi
 
-    # 5. Tag
-    step "Creating tag $TAG"
-    run git -C "$dir" tag -a "$TAG" -m "$TAG"
+step "Creating tag $TAG"
+run git -C "$REPO_DIR" tag -a "$TAG" -m "$TAG"
 
-    # 6. Push
-    step "Pushing to origin"
-    run git -C "$dir" push origin main
-    run git -C "$dir" push origin "$TAG"
+REMOTE_URL="$(git -C "$REPO_DIR" remote get-url origin | sed 's/\.git$//')"
 
-    # 7. GitHub release
-    step "Creating GitHub release"
-    run gh release create "$TAG" \
-        --repo "$(git -C "$dir" remote get-url origin | sed 's/\.git$//')" \
-        --title "$TAG" \
-        --notes-file "$notes_file"
+if $NO_PUSH; then
+    info "Stopping before push (--no-push)"
+    echo ""
+    echo "  $REPO_NAME $TAG is committed and tagged locally. To publish:"
+    echo ""
+    echo "    git -C $REPO_DIR push origin main"
+    echo "    git -C $REPO_DIR push origin $TAG"
+    echo "    gh release create $TAG --repo $REMOTE_URL --title $TAG --notes-file <notes>"
+    echo ""
+    echo "  Release notes are in the CHANGELOG under [$VERSION]."
+    exit 0
+fi
 
-    rm -f "$notes_file"
-}
+step "Pushing to origin"
+run git -C "$REPO_DIR" push origin main
+run git -C "$REPO_DIR" push origin "$TAG"
 
-# --- Execute ----------------------------------------------------------------
+step "Creating GitHub release"
+run gh release create "$TAG" \
+    --repo "$REMOTE_URL" \
+    --title "$TAG" \
+    --notes-file "$NOTES_FILE"
 
-release_repo "$EB_DIR"  "embedded-bridge"
-release_repo "$PTR_DIR" "pio-test-runner"
-
-info "Done! Released $TAG for both repos."
+info "Done! Released $REPO_NAME $TAG"
 echo ""
-echo "  embedded-bridge:  https://github.com/m-mcgowan/embedded-bridge/releases/tag/$TAG"
-echo "  pio-test-runner:  https://github.com/m-mcgowan/pio-test-runner/releases/tag/$TAG"
+echo "  $REMOTE_URL/releases/tag/$TAG"
