@@ -360,6 +360,36 @@ A plugin that fails to import, raises during construction, or lacks
 starting. Hook methods that raise are isolated per plugin, so one
 broken plugin does not stop the others from running.
 
+## Running this project's own tests
+
+```bash
+pip install -e ".[dev]"
+pytest                      # host-side suite; hardware tests skip themselves
+```
+
+Acceptance tests under `tests/acceptance/` talk to a real device and skip
+unless you give them one:
+
+```bash
+pytest tests/acceptance --port /dev/cu.usbmodem1101
+```
+
+The native C++ tests cover the doctest internals and are not part of the
+pytest run. They need the doctest header, which is fetched on demand rather
+than vendored:
+
+```bash
+mkdir -p tests/doctest
+curl -sL https://raw.githubusercontent.com/doctest/doctest/v2.4.11/doctest/doctest.h \
+    -o tests/doctest/doctest.h
+g++ -std=c++17 -Itests/doctest -Iinclude \
+    tests/test_doctest_internals.cpp -o tests/test_doctest_internals
+./tests/test_doctest_internals
+```
+
+`-Iinclude` matters: it is what makes the harness test the real
+`etst/doctest/resume.h` instead of a copy of it.
+
 ## Documentation
 
 - [Architecture & Design](docs/design.md) — protocol, components, deep sleep orchestration

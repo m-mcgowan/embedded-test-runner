@@ -5,7 +5,7 @@ import time
 from io import BytesIO
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from conftest import (
+from pio_mocks import (
     MockProjectConfig,
     MockTestRunnerOptions,
     MockTestStatus,

@@ -5,14 +5,12 @@ import time
 import pytest
 
 
-def pytest_addoption(parser):
-    parser.addoption("--port", required=True, help="Serial port for the device")
-    parser.addoption("--baud", default=115200, type=int, help="Baud rate")
-
-
 @pytest.fixture(scope="session")
 def port(request):
-    return request.config.getoption("--port")
+    value = request.config.getoption("--port")
+    if not value:
+        pytest.skip("acceptance tests need a device: pass --port <serial port>")
+    return value
 
 
 @pytest.fixture(scope="session")

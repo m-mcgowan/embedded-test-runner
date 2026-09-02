@@ -1,6 +1,6 @@
 """Tests for receiver plugin discovery via setuptools entry points."""
 
-from conftest import (
+from pio_mocks import (
     FakeEntryPoint,
     MockProjectConfig,
     MockTestRunnerOptions,

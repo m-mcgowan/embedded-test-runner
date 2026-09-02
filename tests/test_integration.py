@@ -13,7 +13,7 @@ the READY line to simulate the orchestrator advancing the state machine.
 In real usage, ``stage_testing()`` does this automatically.
 """
 
-from conftest import (
+from pio_mocks import (
     MockProjectConfig,
     MockTestRunnerOptions,
     MockTestStatus,

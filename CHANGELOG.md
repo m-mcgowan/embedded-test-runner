@@ -5,6 +5,26 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Fixed
+- **A plain `pytest` run could not collect this project's own test suite.**
+  Two separate defects, both hidden by CI's
+  `--ignore=tests/integration --ignore=tests/acceptance`. First, `tests/` and
+  `tests/acceptance/` both hold a `conftest.py`, and pytest imports each under
+  the bare module name `conftest`, so the seven unit-test modules doing
+  `from conftest import MockProjectConfig` got whichever loaded first —
+  acceptance, alphabetically — and failed to import. The shared mocks moved to
+  `tests/pio_mocks.py`, an ordinary importable module; `conftest.py` keeps only
+  the `install_pio_mocks()` side effect that must happen at collection time.
+  Second, `pytest_addoption` for `--port`/`--baud` sat in the acceptance
+  conftest, and pytest only calls that hook on *initial* conftests, so a
+  whole-tree run never declared the options and every acceptance fixture died
+  on `ValueError: no option named 'port'`. The declaration moved to
+  `tests/conftest.py` and dropped `required=True`, which pytest had been
+  applying to the entire session rather than the directory that asked for it.
+  Acceptance tests now skip without a `--port` instead of breaking the run,
+  CI runs `pytest tests/ -v` with no ignore flags, and
+  `tests/test_suite_hygiene.py` fails if plain collection ever breaks again.
+
 ### Added
 - **`scripts/release.sh --publish <version>`** — finishes a release left local
   by `--no-push`: pushes `main` and the tag, then creates the GitHub release

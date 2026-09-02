@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from conftest import MockProjectConfig, MockTestRunnerOptions, MockTestSuite
+from pio_mocks import MockProjectConfig, MockTestRunnerOptions, MockTestSuite
 from etst.runner import EmbeddedTestRunner
 
 

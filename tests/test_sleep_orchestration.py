@@ -17,7 +17,7 @@ Each test documents the exact protocol exchange between host and device.
 import os
 from unittest.mock import patch
 
-from conftest import MockProjectConfig, MockTestRunnerOptions, MockTestSuite
+from pio_mocks import MockProjectConfig, MockTestRunnerOptions, MockTestSuite
 from etst.protocol import format_crc
 from etst.ready_run_protocol import ProtocolState
 from etst.runner import EmbeddedTestRunner
@@ -513,7 +513,7 @@ class TestFailurePropagationAcrossSleepCycles:
         assert "Sensor/calibration check" in runner._test_failures
 
         # And reported to the test suite
-        from conftest import MockTestStatus
+        from pio_mocks import MockTestStatus
         failed = [c for c in runner.test_suite.cases
                   if c.status == MockTestStatus.FAILED]
         assert len(failed) == 1
@@ -573,7 +573,7 @@ class TestFailurePropagationAcrossSleepCycles:
         assert runner.protocol.state == ProtocolState.FINISHED
 
         # Both tests should be PASSED in the suite (across cycles)
-        from conftest import MockTestStatus
+        from pio_mocks import MockTestStatus
         passed = [c for c in runner.test_suite.cases
                   if c.status == MockTestStatus.PASSED]
         passed_names = {c.name for c in passed}

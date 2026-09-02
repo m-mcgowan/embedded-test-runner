@@ -1,6 +1,6 @@
 """Tests for partition lifecycle hooks (on_partition_start / on_partition_complete)."""
 
-from conftest import (
+from pio_mocks import (
     FakeEntryPoint,
     MockProjectConfig,
     MockTestRunnerOptions,

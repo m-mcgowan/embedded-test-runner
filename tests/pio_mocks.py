@@ -1,4 +1,10 @@
-"""Test fixtures and PIO mocks for pio-test-runner tests."""
+"""PlatformIO mocks and fakes shared across the unit tests.
+
+Imported as a normal module (`from pio_mocks import ...`) rather than living
+in `conftest.py`: two conftest files in this tree compete for the module name
+`conftest`, so importing helpers from it is not reliable. `conftest.py` calls
+`install_pio_mocks()` from here at collection time.
+"""
 
 import enum
 import sys

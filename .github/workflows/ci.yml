@@ -27,7 +27,11 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest tests/ --ignore=tests/integration --ignore=tests/acceptance -v
+        # No --ignore flags: the acceptance tests skip themselves without a
+        # --port, and tests/test_suite_hygiene.py fails if a plain run ever
+        # stops collecting cleanly again. Ignoring directories is what let
+        # two collection bugs sit unnoticed in the first place.
+        run: pytest tests/ -v
 
   native-cpp-tests:
     runs-on: ubuntu-latest
