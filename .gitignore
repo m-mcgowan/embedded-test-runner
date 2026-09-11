@@ -18,6 +18,7 @@ BUG_*.md
 docs/BUG-*.md
 docs/TODO-*.md
 docs/superpowers/
+docs/plans/
 
 # Log files
 logs/

@@ -703,8 +703,8 @@ int main(int argc, char** argv) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ETST:ARGS folding — accumulated args must reach EVERY command that runs tests
 //
-// Regression cover for a silent coverage defect measured on ESP32-S3 board 1.10: args
-// were folded into RUN/RUN_ALL/RUN: but NOT into RESUME_AFTER:. Every
+// Regression cover for a silent coverage defect measured on ESP32-S3 hardware:
+// args were folded into RUN/RUN_ALL/RUN: but NOT into RESUME_AFTER:. Every
 // deep-sleep test forces a resume cycle, so the first cycle honoured the run's
 // filters and environment and every later one ran without them. The suite
 // still exited green, because a test that skips counts as a test that passed.
