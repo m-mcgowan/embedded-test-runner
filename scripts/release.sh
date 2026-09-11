@@ -19,6 +19,27 @@
 #                       Pushing by hand first is fine — the pushes are no-ops.
 #       --repo <dir>    Repo to release. Defaults to this script's own repo
 #                       (pio-test-runner).
+#       --skip-venv     Skip the clean-virtualenv verification. Emergency use
+#                       only: it is the check that catches undeclared
+#                       dependencies, which a working checkout cannot see.
+#       --skip-ci       Do not wait for CI before tagging. Emergency use only.
+#
+# Two gates stand between a commit and a tag, because v0.3.3 was tagged on a
+# red build:
+#
+#   1. A clean virtualenv, before anything is committed. The suite is installed
+#      from `pip install -e ".[dev]"` into an empty environment and run the way
+#      CI runs it. A working checkout has whatever its developer happened to
+#      install -- PlatformIO's environment supplies pyserial here -- so it
+#      cannot tell a declared dependency from an ambient one. An empty
+#      environment can.
+#
+#   2. Real CI, before anything is tagged. The release commit is pushed, and
+#      the tag is only created once every workflow run for that exact SHA has
+#      concluded successfully. This is what a release-by-PR would buy, on the
+#      real runners and the full matrix, without the round trip -- and it makes
+#      tagging a red build structurally impossible rather than merely
+#      discouraged.
 #
 # Each repo carries its own version — they are NOT released in lockstep.
 #
@@ -41,6 +62,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SELF_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 DRY_RUN=false
 MODE=full          # full | local | publish
+SKIP_VENV=false
+SKIP_CI=false
 REPO_DIR=""
 TODAY="$(date +%Y-%m-%d)"
 
@@ -78,6 +101,8 @@ while [[ $# -gt 0 ]]; do
         --no-push)    set_mode local; shift ;;
         --publish)    set_mode publish; shift ;;
         --repo)       REPO_DIR="${2:-}"; [[ -n "$REPO_DIR" ]] || die "--repo needs a directory"; shift 2 ;;
+        --skip-venv)  SKIP_VENV=true; shift ;;
+        --skip-ci)    SKIP_CI=true; shift ;;
         -h|--help)    usage 0 ;;
         -*)           die "Unknown option: $1" ;;
         *)            [[ -z "$VERSION" ]] || die "Unexpected argument: $1"; VERSION="$1"; shift ;;
@@ -161,6 +186,123 @@ if $DO_PUBLISH && gh release view "$TAG" --repo "$REMOTE_URL" >/dev/null 2>&1; t
     die "$REPO_NAME: GitHub release $TAG already exists — $REMOTE_URL/releases/tag/$TAG"
 fi
 
+# Gate 1: install and run the suite in an empty virtualenv, exactly as CI does.
+# A working checkout cannot distinguish a declared dependency from one that
+# merely happens to be installed; an empty environment can. This is the check
+# that would have caught pyserial going undeclared.
+verify_clean_venv() {
+    [[ -f "$REPO_DIR/pyproject.toml" ]] || return 0   # not a Python project
+
+    if $SKIP_VENV; then
+        step "Skipping clean-virtualenv check (--skip-venv)"
+        return 0
+    fi
+    if $DRY_RUN; then
+        step "[dry-run] Would verify the suite in a clean virtualenv"
+        return 0
+    fi
+
+    step "Verifying the suite in a clean virtualenv"
+    local venv
+    venv="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$venv'" RETURN
+
+    python3 -m venv "$venv/env" \
+        || die "$REPO_NAME: could not create a virtualenv"
+    "$venv/env/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+    if ! "$venv/env/bin/pip" install --quiet -e "$REPO_DIR[dev]" > "$venv/pip.log" 2>&1; then
+        echo "--- pip output ---" >&2
+        tail -30 "$venv/pip.log" >&2
+        die "$REPO_NAME: the package does not install into a clean environment"
+    fi
+    if ! (cd "$REPO_DIR" && "$venv/env/bin/python" -m pytest tests/ -q \
+            -p no:cacheprovider > "$venv/pytest.log" 2>&1); then
+        echo "--- pytest output ---" >&2
+        tail -40 "$venv/pytest.log" >&2
+        die "$REPO_NAME: the suite fails in a clean environment.
+     It may still pass in your working checkout -- that is the point of this
+     check. A missing entry in the dev extra is the usual cause."
+    fi
+    step "  clean venv: $(tail -1 "$venv/pytest.log")"
+}
+
+# Gate 2: wait for every workflow run on a pushed SHA to conclude successfully.
+# Tagging is what makes a release permanent, so the tag waits for the real
+# runners rather than trusting a local run on one developer's machine.
+wait_for_ci() {
+    local sha="$1"
+
+    if $SKIP_CI; then
+        step "Skipping CI gate (--skip-ci)"
+        return 0
+    fi
+    if $DRY_RUN; then
+        step "[dry-run] Would wait for CI to pass on ${sha:0:8}"
+        return 0
+    fi
+
+    step "Waiting for CI on ${sha:0:8} (this is what gates the tag)"
+    local deadline=$((SECONDS + 2400))
+    local seen=false
+
+    while (( SECONDS < deadline )); do
+        local runs summary
+        runs="$(gh run list --repo "$REMOTE_URL" --limit 30 \
+                  --json headSha,status,conclusion,name 2>/dev/null || echo '[]')"
+        summary="$(printf '%s' "$runs" | SHA="$sha" python3 -c '
+import json, os, sys
+sha = os.environ["SHA"]
+try:
+    runs = [r for r in json.load(sys.stdin) if r.get("headSha") == sha]
+except Exception:
+    runs = []
+if not runs:
+    print("none")
+    sys.exit()
+pending = [r for r in runs if r.get("status") != "completed"]
+bad = [r for r in runs
+       if r.get("status") == "completed"
+       and r.get("conclusion") not in ("success", "skipped", "neutral")]
+if pending:
+    print("pending %d %s" % (len(pending), ",".join(r["name"] for r in pending)))
+elif bad:
+    print("failed %s" % ",".join("%s=%s" % (r["name"], r["conclusion"]) for r in bad))
+else:
+    print("ok %d" % len(runs))
+')"
+
+        case "$summary" in
+            none)
+                # A run can take a few seconds to be created after the push.
+                if $seen; then
+                    die "$REPO_NAME: CI runs for ${sha:0:8} disappeared mid-wait"
+                fi
+                sleep 10
+                ;;
+            pending*)
+                seen=true
+                step "  $summary"
+                sleep 20
+                ;;
+            failed*)
+                die "$REPO_NAME: CI failed on ${sha:0:8} -- ${summary#failed }
+     The release commit is pushed but NOT tagged, which is the point.
+     Fix forward on main, then re-run with the same version:
+       scripts/release.sh --publish $VERSION
+     A local tag may already exist from an earlier --no-push run; remove it
+     with 'git tag -d $TAG' if you need to re-cut it."
+                ;;
+            ok*)
+                seen=true
+                step "  CI green (${summary#ok } run(s))"
+                return 0
+                ;;
+        esac
+    done
+    die "$REPO_NAME: timed out waiting for CI on ${sha:0:8}"
+}
+
 # pio-test-runner depends on embedded-bridge. If the bridge sitting alongside
 # us has commits past its own last release tag, they would ship inside this
 # release undescribed by any bridge release. Silence is the expected outcome:
@@ -188,6 +330,12 @@ check_bridge_released() {
 
 if [[ "$REPO_DIR" == "$SELF_REPO" ]]; then
     check_bridge_released
+fi
+
+# Before anything is committed, not after: a failure here should cost nothing
+# to recover from.
+if $DO_LOCAL; then
+    verify_clean_venv
 fi
 
 info "Preflight OK"
@@ -251,6 +399,14 @@ sed -n "/^## \[$VERSION\]/,/^## \[/{/^## \[/d;p;}" "$REPO_DIR/CHANGELOG.md" \
 
 step "Pushing to origin"
 run git -C "$REPO_DIR" push origin main
+
+# The tag is the permanent artifact, so it goes out only after the real
+# runners have passed on this exact commit. Pushing the branch first is what
+# makes that possible -- and if CI fails, main simply carries an untagged
+# commit, which is an ordinary state to fix forward from.
+wait_for_ci "$(git -C "$REPO_DIR" rev-parse HEAD)"
+
+step "Pushing the tag"
 run git -C "$REPO_DIR" push origin "$TAG"
 
 step "Creating GitHub release"

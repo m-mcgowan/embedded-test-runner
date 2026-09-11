@@ -5,6 +5,19 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Added
+- **Two gates now stand between a release commit and its tag**, because v0.3.3
+  was tagged on a red build. `scripts/release.sh` first installs the package
+  into an empty virtualenv and runs the suite there, before anything is
+  committed — a working checkout cannot tell a declared dependency from one
+  that merely happens to be installed, which is exactly how `pyserial` went
+  undeclared. It then pushes the release commit and waits for every workflow
+  run on that exact SHA to conclude successfully before creating the tag, so a
+  tag on a red build is structurally impossible rather than merely
+  discouraged. If CI fails, `main` is left carrying an untagged commit, which
+  is an ordinary state to fix forward from. `--skip-venv` and `--skip-ci` exist
+  for emergencies.
+
 ### Fixed
 - **CI could not collect the acceptance tests.** Dropping CI's
   `--ignore=tests/acceptance` in 0.3.3 exposed that `pyserial` was never
