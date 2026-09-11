@@ -50,6 +50,7 @@
 #include <vector>
 #include <doctest.h>
 #include "etst/doctest/resume.h"   // sorted_registry(), select_resume_after()
+#include "etst/doctest/command_args.h"  // combine_command_args()
 #include <Arduino.h>
 #include "etst/test_runner.h"
 #include "etst/env.h"
@@ -787,26 +788,12 @@ inline void run_cycle(const CommandResult& cmd_result) {
 
     active_filters().clear();
 
-    // Build combined command: accumulated ARGS + RUN body
-    String command = cmd_result.command;
-    if (!cmd_result.args.empty()) {
-        String combined_body;
-        for (const auto& arg : cmd_result.args) {
-            if (combined_body.length() > 0) combined_body += " ";
-            combined_body += arg;
-        }
-        if (command.startsWith("RUN:")) {
-            String inline_args = command.substring(4);
-            inline_args.trim();
-            if (inline_args.length() > 0) {
-                combined_body += " ";
-                combined_body += inline_args;
-            }
-            command = "RUN: " + combined_body;
-        } else if (command == "RUN" || command == "RUN_ALL") {
-            command = "RUN: " + combined_body;
-        }
-    }
+    // Fold accumulated ETST:ARGS into the command. Extracted to command_args.h
+    // so it has native coverage: this logic used to drop the args on the
+    // RESUME_AFTER path, which silently changed the filters and environment of
+    // every cycle after the first deep sleep.
+    String command = etst::doctest::combine_command_args(cmd_result.command,
+                                                         cmd_result.args);
 
     auto cmd = apply_runner_command(context, command);
 

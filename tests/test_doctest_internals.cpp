@@ -60,6 +60,12 @@ public:
     }
     String& operator+=(char c) { s_ += c; return *this; }
     String& operator+=(const char* s) { s_ += s; return *this; }
+    // Real Arduino String has these; command_args.h uses them.
+    String& operator+=(const String& o) { s_ += o.s_; return *this; }
+    int indexOf(const char* needle) const {
+        size_t p = s_.find(needle);
+        return p == std::string::npos ? -1 : (int)p;
+    }
     bool operator==(const String& other) const { return s_ == other.s_; }
     friend bool operator==(const String& a, const char* b) { return a.s_ == b; }
 };
@@ -72,6 +78,10 @@ struct SerialStub {
 };
 static SerialStub Serial;
 #endif
+
+// The REAL production arg/command folding, not a copy — same reasoning as
+// resume.h above. It only needs the String shim, which is defined by now.
+#include <etst/doctest/command_args.h>
 
 // Now include our header (needs String and Serial stubs above)
 // We only include the functions we need, not the full runner
@@ -689,3 +699,85 @@ int main(int argc, char** argv) {
     context.applyCommandLine(argc, argv);
     return context.run();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ETST:ARGS folding — accumulated args must reach EVERY command that runs tests
+//
+// Regression cover for a silent coverage defect measured on ESP32-S3 board 1.10: args
+// were folded into RUN/RUN_ALL/RUN: but NOT into RESUME_AFTER:. Every
+// deep-sleep test forces a resume cycle, so the first cycle honoured the run's
+// filters and environment and every later one ran without them. The suite
+// still exited green, because a test that skips counts as a test that passed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_SUITE("command args folding") {
+
+using etst::doctest::combine_command_args;
+
+TEST_CASE("no args leaves the command untouched") {
+    CHECK(combine_command_args(String("RUN"), {}) == "RUN");
+    CHECK(combine_command_args(String("RESUME_AFTER: some test"), {}) ==
+          "RESUME_AFTER: some test");
+}
+
+TEST_CASE("bare RUN becomes RUN: with the args") {
+    std::vector<String> args{String("--env BENCH_POSE=right_side")};
+    CHECK(combine_command_args(String("RUN"), args) ==
+          "RUN: --env BENCH_POSE=right_side");
+}
+
+TEST_CASE("RUN_ALL becomes RUN: with the args") {
+    std::vector<String> args{String("--ts *Orientation*")};
+    CHECK(combine_command_args(String("RUN_ALL"), args) ==
+          "RUN: --ts *Orientation*");
+}
+
+TEST_CASE("RUN: keeps its inline args as well as the accumulated ones") {
+    std::vector<String> args{String("--env BENCH_POSE=right_side")};
+    String out = combine_command_args(String("RUN: --tc *foo*"), args);
+    CHECK(out.indexOf("--env BENCH_POSE=right_side") >= 0);
+    CHECK(out.indexOf("--tc *foo*") >= 0);
+}
+
+TEST_CASE("multiple accumulated args are space-joined in arrival order") {
+    std::vector<String> args{String("--env BENCH_POSE=right_side"),
+                             String("--ts *Orientation*")};
+    CHECK(combine_command_args(String("RUN"), args) ==
+          "RUN: --env BENCH_POSE=right_side --ts *Orientation*");
+}
+
+// The defect. Each of these failed before the fix.
+TEST_CASE("RESUME_AFTER receives the accumulated args") {
+    std::vector<String> args{String("--env BENCH_POSE=right_side")};
+    String out = combine_command_args(String("RESUME_AFTER: ULP boot_counter survives deep sleep"), args);
+    CHECK_MESSAGE(out.indexOf("--env BENCH_POSE=right_side") >= 0,
+        "args dropped on the resume path: every cycle after the first deep "
+        "sleep would run without the run's environment");
+}
+
+TEST_CASE("RESUME_AFTER keeps the test name, and keeps it ahead of the args") {
+    // apply_runner_command() splits "RESUME_AFTER: <name> [--flags]" at the
+    // FIRST " --", so the name has to come first or it is parsed as flags.
+    std::vector<String> args{String("--env BENCH_POSE=right_side")};
+    String out = combine_command_args(String("RESUME_AFTER: ULP boot_counter survives deep sleep"), args);
+    CHECK(out.startsWith("RESUME_AFTER: ULP boot_counter survives deep sleep"));
+    int name_pos = out.indexOf("ULP boot_counter survives deep sleep");
+    int flag_pos = out.indexOf(" --");
+    CHECK(name_pos >= 0);
+    CHECK(flag_pos > name_pos);
+}
+
+TEST_CASE("RESUME_AFTER receives filters too, not just env") {
+    std::vector<String> args{String("--ts *Orientation*")};
+    String out = combine_command_args(String("RESUME_AFTER: a test"), args);
+    CHECK_MESSAGE(out.indexOf("--ts *Orientation*") >= 0,
+        "filters dropped on the resume path: resumed segments would run "
+        "unfiltered, reporting far more cases than were requested");
+}
+
+TEST_CASE("an unrecognised command is passed through unchanged") {
+    std::vector<String> args{String("--env X=1")};
+    CHECK(combine_command_args(String("WAIT"), args) == "WAIT");
+}
+
+}  // TEST_SUITE
