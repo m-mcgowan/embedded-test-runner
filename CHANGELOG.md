@@ -5,6 +5,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-09-11
+
 ### Added
 - **Two gates now stand between a release commit and its tag**, because v0.3.3
   was tagged on a red build. `scripts/release.sh` first installs the package
