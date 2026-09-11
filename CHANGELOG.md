@@ -6,6 +6,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 ## [Unreleased]
 
 ### Fixed
+- **`RESUME_AFTER` discarded the run's accumulated `ETST:ARGS`.** They were
+  folded into `RUN`, `RUN_ALL` and `RUN:` but not `RESUME_AFTER:`. 
+
 - **A plain `pytest` run could not collect this project's own test suite.**
   Two separate defects, both hidden by CI's
   `--ignore=tests/integration --ignore=tests/acceptance`. First, `tests/` and
