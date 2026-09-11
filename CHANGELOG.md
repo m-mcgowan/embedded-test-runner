@@ -5,6 +5,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-09-11
+
 ### Fixed
 - **`RESUME_AFTER` discarded the run's accumulated `ETST:ARGS`.** They were
   folded into `RUN`, `RUN_ALL` and `RUN:`, but a `RESUME_AFTER:` command
