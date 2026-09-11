@@ -5,6 +5,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Fixed
+- **CI could not collect the acceptance tests.** Dropping CI's
+  `--ignore=tests/acceptance` in 0.3.3 exposed that `pyserial` was never
+  declared anywhere: `tests/acceptance/helpers.py` imports it at module scope,
+  so collection died with `ModuleNotFoundError: No module named 'serial'` even
+  though those tests skip themselves without a `--port`. It went unnoticed
+  locally because PlatformIO's environment already provides the module. Now
+  declared in the `dev` extra, and verified by running CI's exact command in a
+  clean virtualenv rather than the working one.
+
 ## [0.3.3] — 2026-09-11
 
 ### Fixed

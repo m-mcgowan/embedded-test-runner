@@ -24,6 +24,10 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.0",
+    # tests/acceptance/helpers.py imports it at module scope, so the suite
+    # cannot even be COLLECTED without it — the acceptance tests skip
+    # themselves without a --port, but only after their module imports.
+    "pyserial>=3.5",
 ]
 
 [tool.setuptools.packages.find]
