@@ -7,7 +7,22 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ### Fixed
 - **`RESUME_AFTER` discarded the run's accumulated `ETST:ARGS`.** They were
-  folded into `RUN`, `RUN_ALL` and `RUN:` but not `RESUME_AFTER:`. 
+  folded into `RUN`, `RUN_ALL` and `RUN:`, but a `RESUME_AFTER:` command
+  matched neither branch and fell through to the passthrough, silently
+  dropping them. Every deep-sleep test forces a resume cycle, so on any suite
+  that sleeps, the first cycle honoured the run's filters and environment and
+  every cycle after it ran without them. The failure runs in the dangerous
+  direction: coverage quietly changes while the run still exits green, because
+  a test that skips counts as a test that passed. Measured on ESP32-S3
+  hardware, a 19-cycle suite applied `--env` on the first cycle only, and all
+  five environment-gated cases then skipped while the suite reported
+  218 ran / 218 passed. Filters travel the same path, so a focused `--ts` run
+  over-reported for the same reason.
+
+  The folding logic is extracted to `include/etst/doctest/command_args.h` so it
+  can be covered natively rather than fixed in place — it had no native
+  coverage precisely because it was tangled with Arduino dependencies. Ten
+  cases now exercise the real function; three of them failed before the fix.
 
 - **A plain `pytest` run could not collect this project's own test suite.**
   Two separate defects, both hidden by CI's
