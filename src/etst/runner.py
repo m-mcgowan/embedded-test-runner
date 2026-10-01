@@ -692,9 +692,7 @@ class EmbeddedTestRunner(_BaseRunner):
 
                 # Check if READY → send ARGS lines then command
                 if self.protocol.state == ProtocolState.READY:
-                    for args_line in getattr(self, '_args_lines', []):
-                        self._send_command(f"ETST:ARGS {args_line}")
-                    self._send_command(command)
+                    self._send_configuration(getattr(self, '_args_lines', []), command)
                     self.protocol.command_sent()
             else:
                 # Check for hang during WAITING_FOR_READY
@@ -1029,6 +1027,28 @@ class EmbeddedTestRunner(_BaseRunner):
             except Exception:
                 pass
         self._ser = None
+
+    # Pause between the configuration lines sent at READY. The device polls
+    # its serial input every ~10 ms, and a USB-CDC receive buffer is typically
+    # 256 bytes: written back to back, a long filter list plus a resume command
+    # overflowed it, the command's tail was dropped, its CRC failed, and the
+    # device fell back to its compiled-in filters (the whole suite ran).
+    LINE_GAP_S = 0.05
+    DEVICE_RX_BUFFER = 256
+
+    def _send_configuration(self, args_lines, command):
+        """Send the ETST:ARGS lines then the command, one line at a time."""
+        lines = [f"ETST:ARGS {a}" for a in args_lines] + [command]
+        for i, line in enumerate(lines):
+            if len(format_crc(line)) + 1 > self.DEVICE_RX_BUFFER:
+                _secho(
+                    f"[runner] WARNING: a {len(line)}-byte line may not fit the "
+                    f"device's {self.DEVICE_RX_BUFFER}-byte receive buffer: {line[:60]}...",
+                    fg="yellow", err=True,
+                )
+            self._send_command(line)
+            if i + 1 < len(lines):
+                time.sleep(self.LINE_GAP_S)
 
     def _send_command(self, command):
         """Send a command string to the device."""

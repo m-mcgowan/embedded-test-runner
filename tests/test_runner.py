@@ -856,3 +856,45 @@ class TestUnderRunDetection:
         errs = self._errored(suite)
         assert len(errs) == 1
         assert "38 of 186 tests never ran" in errs[0].message
+
+
+class TestConfigurationPacing:
+    """The ETST:ARGS lines and the command go out one line at a time.
+
+    The device polls its serial input every few milliseconds and a USB-CDC
+    receive buffer is typically 256 bytes. Written back to back, a long
+    filter list plus a resume command overflowed it: the tail of the command
+    was dropped, its CRC failed, and the device fell back to its compiled-in
+    filters, running the whole suite instead of the requested files.
+    """
+
+    def test_each_line_is_written_and_drained_before_the_next(self, monkeypatch):
+        runner = make_runner()
+        ser = MockSerial()
+        runner._ser = ser
+        events = []
+        real_write = ser.write
+        ser.write = lambda data: (events.append(("write", data)), real_write(data))
+        monkeypatch.setattr("etst.runner.time.sleep", lambda s: events.append(("sleep", s)))
+
+        long_filter = "--sf " + ",".join(f"*test_file_{i}*" for i in range(12))
+        runner._send_configuration(["--env POSE=up", long_filter], 'RUN: --wake --tc "a test"')
+
+        writes = [e[1].decode() for e in events if e[0] == "write"]
+        assert len(writes) == 3
+        assert writes[0].startswith("ETST:ARGS --env POSE=up")
+        assert writes[1].startswith("ETST:ARGS --sf ")
+        assert writes[2].startswith('RUN: --wake --tc "a test"')
+        # A pause after every line but the last, long enough for a 10 ms poll.
+        kinds = [e[0] for e in events]
+        assert kinds == ["write", "sleep", "write", "sleep", "write"]
+        assert all(e[1] >= runner.LINE_GAP_S >= 0.02 for e in events if e[0] == "sleep")
+
+    def test_no_args_sends_just_the_command(self, monkeypatch):
+        runner = make_runner()
+        runner._ser = MockSerial()
+        slept = []
+        monkeypatch.setattr("etst.runner.time.sleep", lambda s: slept.append(s))
+        runner._send_configuration([], "RUN")
+        assert runner._ser.written_strings == [format_crc("RUN") + "\n"]
+        assert slept == []
