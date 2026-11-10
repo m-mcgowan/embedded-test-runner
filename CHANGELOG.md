@@ -31,6 +31,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
   probe failed alone (`CRC fail (33 bytes)`) and each case ran once with all
   its arguments.
 
+- **`ETST_ON_DONE` now takes effect.** The end-of-run command was written
+  without a CRC, and the device checks the CRC on every line, so it refused
+  it (`CRC fail`, then READY) and stayed in its idle loop whatever was asked.
+  **`ETST_ON_DONE=sleep`, `lightsleep` and `restart` now actually put the
+  device to sleep or restart it, where before they were silently refused**;
+  a setup that relied on the device staying awake after such a run should
+  switch to `wait` (the default) or `none`. The command is now CRC-framed
+  after a bare newline, and a protocol-2 device receives it as a transaction
+  it acknowledges, resent under the same id until it does, so it is acted on
+  once. Works with v0.3.x devices too: they accept a CRC-framed `SLEEP`.
+
 ### Added
 - **Protocol 2: commands are acknowledged, and a command is never run twice.**
   The device announces `ETST:READY proto=2`. A host that sees it frames each

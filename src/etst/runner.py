@@ -48,7 +48,7 @@ from embedded_bridge.receivers import CrashDetector, MemoryTracker, Router
 from embedded_bridge.receivers import SleepWakeMonitor
 
 from .disconnect import DisconnectHandler
-from .protocol import format_crc
+from .protocol import format_crc, parse_line, parse_payload
 from .ready_run_protocol import ProtocolState, ReadyRunProtocol
 from .timing_tracker import TestTimingTracker
 
@@ -783,8 +783,8 @@ class EmbeddedTestRunner(_BaseRunner):
                     self._report_test_failures()
                     break
 
-        # Post-test device command: SLEEP (default), LIGHTSLEEP, RESTART,
-        # WAIT, or NONE.
+        # Post-test device command: WAIT (default), SLEEP, LIGHTSLEEP,
+        # RESTART, or NONE.
         #
         # SLEEP:      deep sleep (saves battery, USB-CDC port disappears)
         # LIGHTSLEEP: light sleep (low power, USB-CDC stays alive, wakes on serial)
@@ -812,16 +812,56 @@ class EmbeddedTestRunner(_BaseRunner):
             }
             cmd = cmd_map.get(on_done, "WAIT")
             try:
-                self._ser.write(f"{cmd}\n".encode())
-                self._ser.flush()
-                _echo(f"[runner] {cmd} sent")
-                # Give firmware time to read the command before closing serial.
+                self._send_end_command(cmd)
+                # Give firmware time to act before closing serial.
                 # Closing USB-CDC can trigger an ESP32-S3 reset.
                 time.sleep(1)
             except Exception:
                 pass  # best-effort — device may have disconnected
 
         self._close_serial()
+
+    def _send_end_command(self, cmd):
+        """Send the end-of-run command (SLEEP, LIGHTSLEEP, RESTART, WAIT).
+
+        It goes out like any other command: CRC-framed, after a bare line
+        terminator, and to a protocol-2 device as a transaction it must
+        acknowledge, resent under the same id until it does (the device does
+        not act on an id twice). Until this was so, the command was written
+        without a CRC, every device refused it, and ``ETST_ON_DONE`` had no
+        effect.
+        """
+        if self.protocol.device_proto < 2:
+            self._send_configuration([], cmd)
+            _echo(f"[runner] {cmd} sent")
+            return
+        txn_id = secrets.token_hex(4)
+        for attempt in range(1 + self.protocol.MAX_RESENDS):
+            if attempt:
+                _echo(f"[runner] {cmd} not acknowledged — resending")
+            self._send_configuration([], cmd, txn_id=txn_id)
+            if self._wait_for_ack(txn_id, self.protocol.ACK_TIMEOUT_S):
+                _echo(f"[runner] {cmd} acknowledged")
+                return
+        _secho(f"[runner] WARNING: device never acknowledged {cmd}",
+               fg="yellow", err=True)
+
+    def _wait_for_ack(self, txn_id, timeout_s):
+        """Read device output until ``ETST:ACK id=<txn_id>`` or the timeout."""
+        deadline = time.monotonic() + timeout_s
+        buf = ""
+        while time.monotonic() < deadline:
+            data = self._ser.read(self._ser.in_waiting or 1)
+            if not data:
+                continue
+            buf += data.decode("utf-8", errors="replace")
+            *lines, buf = buf.split("\n")
+            for line in lines:
+                parsed = parse_line(line.strip())
+                if (parsed and parsed.tag == "ACK" and parsed.crc_valid is not False
+                        and parse_payload(parsed.payload_str).get("id") == txn_id):
+                    return True
+        return False
 
     def _on_serial_data(self, data):
         """Process raw bytes from serial into complete lines and feed receivers.

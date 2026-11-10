@@ -98,7 +98,9 @@ via `validate_crc()`.
 | `ETST:DISCONNECT ms=N` | Device→Host | Serial going away |
 | `ETST:RECONNECT` | Device→Host | Serial restored |
 | `SLEEP` | Host→Device | Enter deep sleep (idle) |
+| `LIGHTSLEEP` | Host→Device | Enter light sleep (idle) |
 | `RESTART` | Host→Device | Restart device (idle) |
+| `WAIT` | Host→Device | Stay in the idle loop |
 | `LIST` | Host→Device | List registered tests |
 
 ### ReadyRunProtocol (`ready_run_protocol.py`)
@@ -187,6 +189,15 @@ device re-announcing after refusing noise in front of an intact command.
 Against a protocol-1 device the host cannot tell which line a refusal hit,
 so noise arriving *between* two of its lines can still cost an argument;
 protocol 2 detects that (`NAK reason=incomplete`) and resends.
+
+**The end-of-run command travels the same way.** After the last `ETST:DONE`
+the runner sends the `ETST_ON_DONE` command (`WAIT` by default, or `SLEEP`,
+`LIGHTSLEEP`, `RESTART`) to the device's idle loop. It is CRC-framed after a
+bare newline; to a protocol-2 device it is a transaction with no arguments
+(`ETST:BEGIN id=… args=0`, `ETST:CMD id=… SLEEP`), resent under the same id
+until `ETST:ACK` arrives (at most `MAX_RESENDS` times, `ACK_TIMEOUT_S` each).
+Up to v0.3.x it was written without a CRC, so every device refused it and
+`ETST_ON_DONE` had no effect.
 
 **The device no longer re-announces READY when it refuses a line**: it
 sends `ETST:NAK`. A host that predates the NAK still gets the periodic READY

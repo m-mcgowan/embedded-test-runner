@@ -238,7 +238,7 @@ Doctest-specific configuration via `etst::doctest::config`:
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `ETST_ON_DONE` | `wait`, `sleep`, `lightsleep`, `restart`, `none` | `wait` | Action when tests complete. `wait` = idle loop (stays online). `sleep` = deep sleep (saves battery, USB disappears). `restart` = reboot. `none` = close serial. |
+| `ETST_ON_DONE` | `wait`, `sleep`, `lightsleep`, `restart`, `none` | `wait` | Action when tests complete. `wait` = idle loop (stays online). `sleep` = deep sleep (saves battery, USB disappears). `restart` = reboot. `none` = close serial. Up to v0.3.x the command was sent without a CRC and refused by the device, so only `none` and the default idle loop behaved as described. |
 | `ETST_RESUME_AFTER` | test name | none | Skip tests up to named test, run rest. |
 | `ETST_HANG_TIMEOUT` | seconds | `30` | No-output duration before declaring a hang. |
 | `ETST_ENV_<KEY>` | string | none | Forwarded to the firmware as `<KEY>` (prefix stripped). See "Test environment variables" below. |

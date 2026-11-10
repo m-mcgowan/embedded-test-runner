@@ -27,6 +27,9 @@ from etst.protocol import compute_crc8, format_crc
 
 READY_INTERVAL_S = 1.0
 
+# Commands idle_loop() acts on directly rather than running tests.
+IDLE_COMMANDS = ("SLEEP", "LIGHTSLEEP", "RESTART", "WAIT")
+
 
 def _check_crc(line: bytes) -> str | None:
     """Return the content of a CRC-valid ``CONTENT *XX`` line, else None."""
@@ -50,6 +53,7 @@ class DeviceDouble:
         self._out: list[bytes] = []     # lines the device has printed, unread
         self.printed: list[str] = []    # every line the device printed
         self.executions: list[tuple[str, list[str]]] = []
+        self.idle_commands: list[str] = []  # SLEEP/RESTART/... the device acted on
         self.is_open = True
         self.mute_on_accept_s = 0.0     # proto 2: hold all output after a CMD
         self._muted_until = 0.0
@@ -201,6 +205,14 @@ class DeviceDouble:
         self._run(content)
 
     def _run(self, command: str) -> None:
+        if command in IDLE_COMMANDS:
+            # idle_loop() acts on these itself: no test cycle, no DONE.
+            self.idle_commands.append(command)
+            self._args.clear()
+            self._txn = None
+            if command == "WAIT":
+                self._ready()
+            return
         self.executions.append((command, list(self._args)))
         self._args.clear()
         self._txn = None

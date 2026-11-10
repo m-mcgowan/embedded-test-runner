@@ -33,12 +33,13 @@ def _runner_on(device):
     return runner
 
 
-def _run_cycle(runner, command=WAKE_CMD, timeout=15):
+def _run_cycle(runner, command=WAKE_CMD, timeout=15, skip_post_test=True):
     error = []
 
     def target():
         try:
-            runner._run_test_cycle(command=command, reset=False, skip_post_test=True)
+            runner._run_test_cycle(command=command, reset=False,
+                                   skip_post_test=skip_post_test)
         except Exception as exc:  # pragma: no cover - reported below
             error.append(exc)
 
@@ -166,3 +167,69 @@ class TestTransactionDevice:
         assert len({c.split()[1] for c in cmds}) == 1, "a resend keeps its id"
         assert device.executions == [(WAKE_CMD, ARGS)]
         assert any("dup=1" in p for p in device.printed)
+
+
+class TestEndOfRunCommand:
+    """``ETST_ON_DONE`` reaches the device and is acted on once.
+
+    The end-of-run command (SLEEP, LIGHTSLEEP, RESTART, WAIT) used to be
+    written without a CRC. Every device checks the CRC on every line, so it
+    refused the command: ``ETST_ON_DONE=sleep`` never put a device to sleep.
+    """
+
+    def _finish(self, device, monkeypatch, on_done):
+        monkeypatch.setenv("ETST_ON_DONE", on_done)
+        runner = _runner_on(device)
+        runner._args_lines = []
+        _run_cycle(runner, command="RUN", skip_post_test=False)
+        device.run_until_idle()
+        return runner
+
+    def test_a_legacy_device_acts_on_sleep(self, monkeypatch):
+        device = DeviceDouble(proto=1)
+        self._finish(device, monkeypatch, "sleep")
+        assert device.idle_commands == ["SLEEP"]
+        assert not any("CRC fail" in p for p in device.printed)
+
+    def test_the_default_wait_is_accepted_too(self, monkeypatch):
+        monkeypatch.delenv("PTR_POST_TEST", raising=False)
+        device = DeviceDouble(proto=1)
+        monkeypatch.delenv("ETST_ON_DONE", raising=False)
+        runner = _runner_on(device)
+        runner._args_lines = []
+        _run_cycle(runner, command="RUN", skip_post_test=False)
+        device.run_until_idle()
+        assert device.idle_commands == ["WAIT"]
+
+    def test_a_transaction_device_acknowledges_restart(self, monkeypatch):
+        device = DeviceDouble(proto=2)
+        self._finish(device, monkeypatch, "restart")
+        assert device.idle_commands == ["RESTART"]
+        cmds = [s for s in device.written_strings if s.startswith("ETST:CMD")]
+        assert cmds[-1].split()[2] == "RESTART"
+        assert any(p.startswith("ETST:ACK id=" + cmds[-1].split()[1][3:])
+                   for p in device.printed)
+
+    def test_an_unacknowledged_end_command_is_resent_but_acted_on_once(self, monkeypatch):
+        device = DeviceDouble(proto=2)
+        monkeypatch.setenv("ETST_ON_DONE", "lightsleep")
+        runner = _runner_on(device)
+        runner._args_lines = []
+        runner.protocol.ACK_TIMEOUT_S = 0.3
+        real_write = device.write
+
+        def write(data):
+            # The first copy of the end command reaches the device, but the
+            # host hears nothing back until it has resent.
+            if data.startswith(b"ETST:CMD") and b"LIGHTSLEEP" in data \
+                    and not device.idle_commands:
+                device.mute_on_accept_s = 0.8
+            real_write(data)
+
+        device.write = write
+        _run_cycle(runner, command="RUN", skip_post_test=False)
+        device.run_until_idle()
+        sent = [s for s in device.written_strings
+                if s.startswith("ETST:CMD") and "LIGHTSLEEP" in s]
+        assert len(sent) >= 2
+        assert device.idle_commands == ["LIGHTSLEEP"]
