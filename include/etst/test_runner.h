@@ -37,9 +37,12 @@ inline void signal_reconnect() {
 // =====================================================================
 
 /// Signal that the device is ready to receive test commands.
-/// The host will respond with RUN_ALL or RUN:<filter>.
+/// The host will respond with RUN_ALL or RUN:<filter>, or with a transaction
+/// (ETST:BEGIN / ETST:ARGS / ETST:CMD) when it speaks protocol 2. `proto=2`
+/// is what tells it that this device acknowledges commands and ignores
+/// duplicates; a host that predates it reads the line as a plain READY.
 inline void signal_ready() {
-    emit(Serial, "ETST:READY");
+    emit(Serial, "ETST:READY proto=2");
 }
 
 /// Report test counts before execution begins.

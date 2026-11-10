@@ -5,6 +5,52 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Fixed
+- **A post-wake test case could run twice, the first time without one of its
+  arguments.** Seen on ESP32-S3 hardware after every deep-sleep wake: a USB hub
+  agent probed the re-enumerated port with an ESP32 ROM-bootloader SYNC frame
+  (46 bytes, no newline), which was glued to the front of the host's first
+  `ETST:ARGS` line. The device logged `CRC fail (69 bytes): 55 55 55 …` (the
+  frame less its 13 leading non-letter bytes, plus the 36-byte line), dropped
+  that argument, announced READY again, and ran the command on the remaining
+  arguments. The host read that READY as "command lost" and resent, and the
+  device ran the same case a second time; a phase that is not idempotent
+  failed. Three changes, each of which would have prevented it:
+  - The host writes a bare newline before each configuration, so noise
+    already on the device's input fails as a line of its own.
+  - Against a v0.3.x device, the host resends only on a *second* READY with no
+    `ETST:COUNTS` or `ETST:CASE:START` in between. The first may be the device
+    re-announcing after refusing noise in front of an intact command.
+  - A device line that fails its CRC is tried again from its first `ETST:`
+    when the bytes in front of it contain no `ETST:`, so a glued protocol line
+    is recovered (`[ETST] discarded N bytes of input noise`).
+
+  Measured on ESP32-S3 hardware with the integration DeepSleep suite. With
+  v0.3.4 on both sides, each wake logged `CRC fail (61 bytes)` and ran its
+  phase-2 case twice. With this host and an unchanged v0.3.3 device, the
+  probe failed alone (`CRC fail (33 bytes)`) and each case ran once with all
+  its arguments.
+
+### Added
+- **Protocol 2: commands are acknowledged, and a command is never run twice.**
+  The device announces `ETST:READY proto=2`. A host that sees it frames each
+  command as a transaction: `ETST:BEGIN id=<id> args=<n>`, the `ETST:ARGS`
+  lines, then `ETST:CMD id=<id> <command>`. The device runs the command only
+  if all n arguments arrived, replies `ETST:ACK id=<id>`, and answers a copy of
+  an id it already ran with `ETST:ACK id=<id> dup=1` without running it. A
+  refused line gets `ETST:NAK reason=crc|incomplete|malformed` instead of a
+  bare READY, so the host can tell noise from a lost command. The host resends
+  (same id) after a NAK and 0.5 s without an ACK, or after 2 s with no reply,
+  and fails the run with error code `protocol` after 5 resends. The receiver
+  is `include/etst/doctest/command_receiver.h`, covered natively by eleven new
+  cases in `tests/test_doctest_internals.cpp`.
+
+  Compatible both ways: a host that predates it reads `ETST:READY proto=2` as
+  READY and keeps sending legacy commands, which the device still accepts, and
+  it no longer gets the immediate READY that made it resend (it gets the
+  periodic one within a second if the command really was lost). A new host
+  talking to a v0.3.x device uses the legacy sequence.
+
 ## [0.3.4] — 2026-09-11
 
 ### Added

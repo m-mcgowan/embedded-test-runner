@@ -52,6 +52,7 @@
 #include "etst/doctest/resume.h"   // sorted_registry(), select_resume_after()
 #include "etst/doctest/command_args.h"  // combine_command_args()
 #include <Arduino.h>
+#include "etst/doctest/command_receiver.h"  // CommandReceiver: ARGS/BEGIN/CMD, ACK/NAK
 #include "etst/test_runner.h"
 #include "etst/env.h"
 
@@ -689,18 +690,35 @@ inline RunCommand apply_runner_command(::doctest::Context& ctx, const String& co
 struct CommandResult {
     String command;                   // The RUN/RUN_ALL/RESUME_AFTER command
     std::vector<String> args;         // Accumulated ETST:ARGS payloads
+    String id;                        // Transaction id ("" from a legacy host)
 };
+
+/// The receiver outlives each wait: it remembers the last transaction run, so
+/// a resend that arrives after the command already ran is not run again.
+inline CommandReceiver<String>& command_receiver() {
+    static CommandReceiver<String> receiver;
+    return receiver;
+}
 
 /**
  * @brief Wait for a host command via the READY/RUN protocol.
  *
- * Sends ETST:READY periodically until the host responds with a CRC-valid
- * command or the timeout expires. Returns the command (CRC stripped),
- * or empty string on timeout. Discards any input that fails CRC
- * validation (e.g. garbage from macOS DTR assertion on serial open).
+ * Sends `ETST:READY proto=2` periodically until the host sends a command or
+ * the timeout expires. Returns the command (CRC and framing stripped), or an
+ * empty command on timeout.
  *
- * Accumulates ETST:ARGS lines received during the configure phase.
- * On each READY emission, clears accumulated args and the env store.
+ * Each input line goes through CommandReceiver (command_receiver.h), which
+ * accepts both the legacy ARGS-then-command sequence and the transaction
+ * framing (`ETST:BEGIN` / `ETST:ARGS` / `ETST:CMD`). Replies:
+ *   - `ETST:ACK id=<id>` when a transaction's command is taken;
+ *   - `ETST:ACK id=<id> dup=1` for a transaction that already ran (not rerun);
+ *   - `ETST:NAK reason=<crc|incomplete|malformed> ...` for a refused line.
+ *
+ * A refused line does NOT re-announce READY. Up to v0.3.x it did, and the
+ * host could not tell that READY from "the command never arrived": when the
+ * refused line was noise in front of an intact command, the device ran the
+ * command and the host resent it, so it ran twice. A host that relies on
+ * READY to resend still gets one within READY_INTERVAL_MS.
  */
 inline CommandResult wait_for_command(uint32_t timeout_ms) {
     constexpr uint32_t READY_INTERVAL_MS = 1000;
@@ -708,60 +726,49 @@ inline CommandResult wait_for_command(uint32_t timeout_ms) {
     uint32_t deadline = millis() + timeout_ms;
     uint32_t next_ready = 0;  // send immediately on first iteration
     CommandResult cmd_result;
+    auto& receiver = command_receiver();
     while (wait_forever || millis() < deadline) {
         if (millis() >= next_ready) {
-            cmd_result.args.clear();
+            receiver.on_ready();
             etst::detail::env_clear();
             etst::signal_ready();
             next_ready = millis() + READY_INTERVAL_MS;
         }
         if (Serial.available()) {
             String raw = Serial.readStringUntil('\n');
-            raw.trim();
-            if (raw.length() > 0) {
-                // Strip leading garbage bytes from serial open (macOS DTR
-                // assertion injects stray bytes into USB-CDC RX). Protocol
-                // commands always start with an uppercase ASCII letter.
-                size_t start = 0;
-                while (start < raw.length() && !(raw[start] >= 'A' && raw[start] <= 'Z')) {
-                    start++;
+            auto line = receiver.accept(raw.c_str(), raw.length());
+            if (line.noise_bytes > 0) {
+                Serial.printf("[ETST] discarded %u bytes of input noise before a command line\n",
+                              static_cast<unsigned>(line.noise_bytes));
+            }
+            switch (line.kind) {
+            case LineKind::Empty:
+            case LineKind::Args:
+            case LineKind::Begin:
+                continue;
+            case LineKind::Duplicate:
+                etst::emit(Serial, "ETST:ACK id=%s dup=1", line.id.c_str());
+                continue;
+            case LineKind::Nak:
+                if (line.reason == NakReason::Crc) {
+                    etst::log_crc_failure(Serial, raw.c_str(), raw.length());
+                    etst::emit(Serial, "ETST:NAK reason=crc");
+                } else if (line.reason == NakReason::Incomplete) {
+                    etst::emit(Serial, "ETST:NAK reason=incomplete id=%s got=%u want=%u",
+                               line.id.c_str(), line.got, line.want);
+                } else {
+                    etst::emit(Serial, "ETST:NAK reason=%s", nak_reason_name(line.reason));
                 }
-                if (start > 0 && start < raw.length()) {
-                    raw = raw.substring(start);
-                }
-
-                // Validate CRC at the transport layer
-                char buf[etst::MAX_LINE_LEN];
-                size_t len = raw.length();
-                if (len >= sizeof(buf)) len = sizeof(buf) - 1;
-                memcpy(buf, raw.c_str(), len);
-                buf[len] = '\0';
-
-                auto result = etst::validate_crc(buf, len);
-                if (result.valid) {
-                    String content(result.content);
-                    // ETST:ARGS and ETST:ARG (synonym) lines are accumulated,
-                    // not returned as commands
-                    if (content.startsWith("ETST:ARGS ")) {
-                        String payload = content.substring(10);
-                        payload.trim();
-                        cmd_result.args.push_back(payload);
-                        continue;
-                    }
-                    if (content.startsWith("ETST:ARG ")) {
-                        String payload = content.substring(9);
-                        payload.trim();
-                        cmd_result.args.push_back(payload);
-                        continue;
-                    }
-                    cmd_result.command = content;
-                    return cmd_result;
-                }
-                // CRC failed — log, discard, and force immediate READY re-send
-                etst::log_crc_failure(Serial, raw.c_str(), raw.length());
-                cmd_result.args.clear();
                 etst::detail::env_clear();
-                next_ready = 0;  // force immediate READY re-send
+                continue;
+            case LineKind::Command:
+                if (line.id.length() > 0) {
+                    etst::emit(Serial, "ETST:ACK id=%s", line.id.c_str());
+                }
+                cmd_result.command = line.command;
+                cmd_result.args = line.args;
+                cmd_result.id = line.id;
+                return cmd_result;
             }
         }
         delay(10);

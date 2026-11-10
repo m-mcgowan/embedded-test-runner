@@ -881,13 +881,14 @@ class TestConfigurationPacing:
         runner._send_configuration(["--env POSE=up", long_filter], 'RUN: --wake --tc "a test"')
 
         writes = [e[1].decode() for e in events if e[0] == "write"]
-        assert len(writes) == 3
-        assert writes[0].startswith("ETST:ARGS --env POSE=up")
-        assert writes[1].startswith("ETST:ARGS --sf ")
-        assert writes[2].startswith('RUN: --wake --tc "a test"')
+        assert len(writes) == 4
+        assert writes[0] == "\n"  # terminates any noise already on the input
+        assert writes[1].startswith("ETST:ARGS --env POSE=up")
+        assert writes[2].startswith("ETST:ARGS --sf ")
+        assert writes[3].startswith('RUN: --wake --tc "a test"')
         # A pause after every line but the last, long enough for a 10 ms poll.
         kinds = [e[0] for e in events]
-        assert kinds == ["write", "sleep", "write", "sleep", "write"]
+        assert kinds == ["write", "sleep", "write", "sleep", "write", "sleep", "write"]
         assert all(e[1] >= runner.LINE_GAP_S >= 0.02 for e in events if e[0] == "sleep")
 
     def test_no_args_sends_just_the_command(self, monkeypatch):
@@ -896,5 +897,17 @@ class TestConfigurationPacing:
         slept = []
         monkeypatch.setattr("etst.runner.time.sleep", lambda s: slept.append(s))
         runner._send_configuration([], "RUN")
-        assert runner._ser.written_strings == [format_crc("RUN") + "\n"]
-        assert slept == []
+        assert runner._ser.written_strings == ["\n", format_crc("RUN") + "\n"]
+        assert slept == [runner.LINE_GAP_S]
+
+    def test_transaction_framing_wraps_the_args_and_the_command(self, monkeypatch):
+        runner = make_runner()
+        runner._ser = MockSerial()
+        monkeypatch.setattr("etst.runner.time.sleep", lambda s: None)
+        runner._send_configuration(["--env A=1"], "RUN", txn_id="0a1b2c3d")
+        assert runner._ser.written_strings == [
+            "\n",
+            format_crc("ETST:BEGIN id=0a1b2c3d args=1") + "\n",
+            format_crc("ETST:ARGS --env A=1") + "\n",
+            format_crc("ETST:CMD id=0a1b2c3d RUN") + "\n",
+        ]

@@ -28,6 +28,7 @@ Then set ``test_framework = custom`` in ``platformio.ini``.
 import importlib.metadata
 import logging
 import os
+import secrets
 import time
 import traceback
 
@@ -672,6 +673,7 @@ class EmbeddedTestRunner(_BaseRunner):
         self.test_suite._finished = False
         last_activity = time.time()
         first_assertion_seen = False
+        txn_id = None  # one id per command, kept across its resends
 
         self._open_serial(reset=reset)
 
@@ -690,11 +692,24 @@ class EmbeddedTestRunner(_BaseRunner):
                 self._on_serial_data(data)
                 last_activity = time.time()
 
-                # Check if READY → send ARGS lines then command
-                if self.protocol.state == ProtocolState.READY:
-                    self._send_configuration(getattr(self, '_args_lines', []), command)
-                    self.protocol.command_sent()
-            else:
+            # Resend a protocol-2 command the device has not acknowledged
+            # (checked on silence too: a lost command means no output).
+            self.protocol.poll()
+
+            # READY (first time, or a resend is due) → send ARGS lines then
+            # the command. A resend keeps its transaction id, so a device that
+            # did take the command recognises the copy and does not rerun it.
+            if self.protocol.state == ProtocolState.READY:
+                if txn_id is None:
+                    txn_id = secrets.token_hex(4)
+                else:
+                    _echo("[runner] No sign the device took the command — resending")
+                proto = self.protocol.device_proto
+                self._send_configuration(getattr(self, '_args_lines', []), command,
+                                         txn_id=txn_id if proto >= 2 else None)
+                self.protocol.command_sent(txn_id=txn_id if proto >= 2 else "")
+
+            if not data:
                 # Check for hang during WAITING_FOR_READY
                 if self.protocol.state == ProtocolState.WAITING_FOR_READY:
                     if time.time() > ready_deadline:
@@ -1036,9 +1051,31 @@ class EmbeddedTestRunner(_BaseRunner):
     LINE_GAP_S = 0.05
     DEVICE_RX_BUFFER = 256
 
-    def _send_configuration(self, args_lines, command):
-        """Send the ETST:ARGS lines then the command, one line at a time."""
-        lines = [f"ETST:ARGS {a}" for a in args_lines] + [command]
+    def _send_configuration(self, args_lines, command, txn_id=None):
+        """Send the ETST:ARGS lines then the command, one line at a time.
+
+        A bare line terminator goes first. Bytes that reached the device's
+        input without a newline (a USB hub agent's probe of a re-enumerated
+        port, serial-open noise) would otherwise be glued to the front of the
+        first line and take it down with them; terminated, they fail on their
+        own and the configuration arrives intact.
+
+        With @p txn_id (a device announcing ``ETST:READY proto=2``) the lines
+        are framed as a transaction: ``ETST:BEGIN id=<id> args=<n>``, the
+        ``ETST:ARGS`` lines, ``ETST:CMD id=<id> <command>``. The device runs
+        the command only if all n arguments arrived, acknowledges it by id,
+        and does not run an id twice.
+        """
+        args = [f"ETST:ARGS {a}" for a in args_lines]
+        if txn_id:
+            lines = [f"ETST:BEGIN id={txn_id} args={len(args)}", *args,
+                     f"ETST:CMD id={txn_id} {command}"]
+        else:
+            lines = [*args, command]
+        if self._ser and self._ser.is_open:
+            self._ser.write(b"\n")
+            self._ser.flush()
+            time.sleep(self.LINE_GAP_S)
         for i, line in enumerate(lines):
             if len(format_crc(line)) + 1 > self.DEVICE_RX_BUFFER:
                 _secho(

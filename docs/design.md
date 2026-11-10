@@ -78,11 +78,15 @@ via `validate_crc()`.
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| `ETST:READY` | Device→Host | Device ready for commands |
+| `ETST:READY [proto=2]` | Device→Host | Device ready for commands; `proto=2` offers transactions |
 | `RUN_ALL` | Host→Device | Run all tests |
 | `RUN: <flags>` | Host→Device | Run with filters |
 | `RESUME_AFTER: <name>` | Host→Device | Skip tests up to name |
 | `ETST:ARGS <token …>` | Host→Device | Pre-RUN configuration (e.g. `--env K=V`); repeatable |
+| `ETST:BEGIN id=<id> args=<n>` | Host→Device | Open a transaction of n `ETST:ARGS` lines (proto 2) |
+| `ETST:CMD id=<id> <command>` | Host→Device | Close it: run `<command>` (proto 2) |
+| `ETST:ACK id=<id> [dup=1]` | Device→Host | Transaction's command taken (`dup=1`: already ran, not rerun) |
+| `ETST:NAK reason=<crc\|incomplete\|malformed> …` | Device→Host | A line was refused |
 | `ETST:COUNTS total=N skip=N run=N` | Device→Host | Test count before execution |
 | `ETST:CASE:START suite=".." name=".."` | Device→Host | Test timing marker |
 | `ETST:MEM:BEFORE free=N min=N largest=N` | Device→Host | Heap before test |
@@ -111,6 +115,82 @@ The state machine handles:
 - Garbage byte stripping (USB-CDC DTR assertion noise)
 - Timeout detection with configurable hang threshold
 - SLEEP sentinel detection + device reconnection
+- Delivering each command exactly once (below)
+
+#### Command delivery: exactly once
+
+The serial input is shared. Anything that opens the port can write to it,
+and on a USB-CDC device that re-enumerates after every deep sleep, things
+do: a USB hub agent that probes each newly attached port with an ESP32
+ROM-bootloader SYNC frame (`C0 00 08 24 … 07 07 12 20` + 32 × `55`, `C0`, no
+newline) put that frame on the device's input at every wake. It was glued
+to the front of the host's first `ETST:ARGS` line. A v0.3.x device then
+refused that line, dropped the argument, announced READY again, and ran the
+command on the remaining arguments; the host took the second READY to mean
+"command lost" and sent it again, and the device ran a post-wake test phase
+twice.
+
+Three layers now keep a command from being lost, damaged or repeated:
+
+1. **The host terminates noise first.** Before the configuration it writes
+   a bare `\n`, so bytes already sitting on the device's input fail as a
+   line of their own instead of taking the host's first line with them.
+2. **The device recovers a glued line.** If a line fails its CRC, the
+   device tries once more from its first `ETST:`, provided the bytes in
+   front contain no `ETST:` of their own (those would be the remains of a
+   damaged protocol line, whose loss must be reported, not hidden).
+3. **Transactions (protocol 2).** A device that announces
+   `ETST:READY proto=2` is sent
+
+   ```
+   ETST:BEGIN id=3aee6b82 args=1
+   ETST:ARGS --ts DeepSleep
+   ETST:CMD id=3aee6b82 RUN: --wake --tc "survives deep sleep"
+   ```
+
+   It runs the command only if the BEGIN with that id arrived and exactly
+   `args` arguments followed, replying `ETST:ACK id=<id>` before it runs.
+   Anything else is refused with `ETST:NAK` and the host resends the whole
+   transaction, under the same id. The device remembers the last id it ran
+   and answers a copy with `ETST:ACK id=<id> dup=1` without running it, so
+   a resend can never run a command twice. The id is 8 random hex digits
+   per command.
+
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant D as Device
+    Note over D: probe frame already on the input
+    D->>H: ETST:READY proto=2
+    H->>D: (bare newline)
+    H->>D: ETST:BEGIN id=… args=1
+    H->>D: ETST:ARGS --ts DeepSleep
+    H->>D: ETST:CMD id=… RUN: --wake …
+    D->>H: [ETST] CRC fail (46 bytes): C0 00 08 24 …
+    D->>H: ETST:NAK reason=crc
+    D->>H: ETST:ACK id=…
+    Note over H: ACK within NAK_QUIET_S: no resend
+    D->>H: ETST:COUNTS … / CASE:START … / DONE
+```
+
+**When the host resends.**
+
+| Device | Resends when | Never on |
+|--------|--------------|----------|
+| protocol 2 | a NAK followed by `NAK_QUIET_S` (0.5 s) without our ACK, or no ACK within `ACK_TIMEOUT_S` (2 s); after `MAX_RESENDS` (5) the run fails with error code `protocol` | READY (it is periodic) |
+| protocol 1 (v0.3.x) | a second READY with no `ETST:COUNTS` or `ETST:CASE:START` in between | the first READY after sending |
+
+A protocol-1 device that took the command is busy running it and announces
+nothing; one still waiting announces READY every second. So two READYs with
+no sign of a run mean the command was lost, while a single one may be the
+device re-announcing after refusing noise in front of an intact command.
+Against a protocol-1 device the host cannot tell which line a refusal hit,
+so noise arriving *between* two of its lines can still cost an argument;
+protocol 2 detects that (`NAK reason=incomplete`) and resends.
+
+**The device no longer re-announces READY when it refuses a line**: it
+sends `ETST:NAK`. A host that predates the NAK still gets the periodic READY
+within a second, and resends on it as before.
 
 ### EmbeddedTestRunner (`runner.py`)
 
@@ -151,7 +231,9 @@ Firmware-side test harness for doctest. Provides:
 
 - `DOCTEST_SETUP()` / `DOCTEST_LOOP()` — call from Arduino setup/loop
 - `EtstDoctestListener` — doctest reporter emitting ETST markers
-- `wait_for_command()` — READY/RUN handshake with CRC validation
+- `wait_for_command()` — READY/RUN handshake; each line goes through
+  `CommandReceiver` (`etst/doctest/command_receiver.h`): CRC, noise
+  recovery, transactions, duplicate suppression, ACK/NAK
 - `run_cycle()` — apply filters, run tests, signal done
 - `idle_loop()` — post-test command loop (SLEEP, RESTART, re-run)
 
@@ -286,6 +368,7 @@ embedded-test-runner/
 │       ├── protocol.h           # CRC-8 wire format, emit() helper
 │       ├── test_runner.h        # firmware protocol API (disconnect, sleep, memory)
 │       └── doctest/
+│           ├── command_receiver.h # host lines → commands, exactly once (ACK/NAK)
 │           └── runner.h         # doctest integration (filters, READY/RUN, idle loop)
 ├── src/
 │   └── etst/

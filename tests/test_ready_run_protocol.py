@@ -1,5 +1,7 @@
 """Tests for ReadyRunProtocol."""
 
+import time
+
 from etst.protocol import format_crc, msg_counts
 from etst.ready_run_protocol import ProtocolState, ReadyRunProtocol
 
@@ -346,3 +348,126 @@ class TestExpectedRunLatch:
         p = self._running()
         p.feed(msg_counts(total=5, skip=5, run=0))
         assert p.expected_run == 0
+
+
+class TestReannouncedReady:
+    """A READY after the command was sent is not proof the command was lost.
+
+    A v0.3.x device re-announces READY when a line fails its CRC, and the line
+    that failed may be noise in front of the command rather than the command:
+    the device then runs the command anyway. Resending on that first READY ran
+    a post-wake test case twice on hardware.
+    """
+
+    @staticmethod
+    def _sent():
+        p = ReadyRunProtocol()
+        p.feed(_crc("ETST:READY"))
+        p.command_sent()
+        return p
+
+    def test_a_single_reannounced_ready_does_not_trigger_a_resend(self):
+        p = self._sent()
+        p.feed(_crc("ETST:READY"))
+        assert p.state == ProtocolState.RUNNING
+
+    def test_ready_then_counts_means_the_command_was_taken(self):
+        p = self._sent()
+        p.feed(_crc("ETST:READY"))
+        p.feed(msg_counts(5))
+        p.feed(_crc("ETST:READY"))  # stale: still no resend
+        assert p.state == ProtocolState.RUNNING
+
+    def test_a_second_ready_with_no_progress_means_the_command_was_lost(self):
+        p = self._sent()
+        p.feed(_crc("ETST:READY"))
+        p.feed(_crc("ETST:READY"))
+        assert p.state == ProtocolState.READY
+
+    def test_a_pending_resend_is_cancelled_when_the_run_shows_up(self):
+        # Both lines arrive in one read, before the runner gets to resend.
+        p = self._sent()
+        p.feed(_crc("ETST:READY"))
+        p.feed(_crc("ETST:READY"))
+        assert p.state == ProtocolState.READY
+        p.feed(msg_counts(5))
+        assert p.state == ProtocolState.RUNNING
+        assert p.test_total == 5
+
+    def test_the_count_starts_again_after_a_resend(self):
+        p = self._sent()
+        p.feed(_crc("ETST:READY"))
+        p.feed(_crc("ETST:READY"))
+        p.command_sent()
+        p.feed(_crc("ETST:READY"))
+        assert p.state == ProtocolState.RUNNING
+
+
+class TestTransactionProtocol:
+    """``proto=2``: the device acknowledges each command by transaction id."""
+
+    @staticmethod
+    def _sent(txn_id="0a1b2c3d"):
+        p = ReadyRunProtocol()
+        p.feed(_crc("ETST:READY proto=2"))
+        p.command_sent(txn_id=txn_id)
+        return p
+
+    def test_ready_advertises_the_protocol_version(self):
+        p = ReadyRunProtocol()
+        p.feed(_crc("ETST:READY proto=2"))
+        assert p.state == ProtocolState.READY
+        assert p.device_proto == 2
+
+    def test_a_bare_ready_is_version_1(self):
+        p = ReadyRunProtocol()
+        p.feed(_crc("ETST:READY"))
+        assert p.device_proto == 1
+
+    def test_ready_while_awaiting_ack_is_ignored(self):
+        p = self._sent()
+        for _ in range(3):
+            p.feed(_crc("ETST:READY proto=2"))
+        assert p.state == ProtocolState.RUNNING
+
+    def test_ack_marks_the_command_taken(self):
+        p = self._sent()
+        p.feed(_crc("ETST:ACK id=0a1b2c3d"))
+        assert p.command_taken
+        p.poll(now=time.monotonic() + 3600)  # long after any timeout
+        assert p.state == ProtocolState.RUNNING
+
+    def test_ack_for_another_transaction_does_not_count(self):
+        p = self._sent()
+        p.feed(_crc("ETST:ACK id=ffffffff dup=1"))
+        assert not p.command_taken
+
+    def test_nak_resends_after_a_quiet_moment(self):
+        p = self._sent()
+        p.feed(_crc("ETST:NAK reason=crc"))
+        p.poll(now=time.monotonic())
+        assert p.state == ProtocolState.RUNNING  # not at once
+        p.poll(now=time.monotonic() + p.NAK_QUIET_S + 0.01)
+        assert p.state == ProtocolState.READY
+
+    def test_nak_followed_by_ack_is_not_resent(self):
+        p = self._sent()
+        p.feed(_crc("ETST:NAK reason=crc"))
+        p.feed(_crc("ETST:ACK id=0a1b2c3d"))
+        p.poll(now=time.monotonic() + 3600)
+        assert p.state == ProtocolState.RUNNING
+
+    def test_no_reply_at_all_resends_after_the_ack_timeout(self):
+        p = self._sent()
+        p.poll(now=time.monotonic() + p.ACK_TIMEOUT_S + 0.01)
+        assert p.state == ProtocolState.READY
+
+    def test_gives_up_after_repeated_resends(self):
+        p = self._sent()
+        for _ in range(p.MAX_RESENDS):
+            p.poll(now=time.monotonic() + p.ACK_TIMEOUT_S + 0.01)
+            assert p.state == ProtocolState.READY
+            p.command_sent(txn_id="0a1b2c3d")
+        p.poll(now=time.monotonic() + p.ACK_TIMEOUT_S + 0.01)
+        assert p.state == ProtocolState.ERROR
+        assert p.error_code == "protocol"

@@ -781,3 +781,176 @@ TEST_CASE("an unrecognised command is passed through unchanged") {
 }
 
 }  // TEST_SUITE
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Command receiver — every host command is acted on exactly once
+//
+// Seen on ESP32-S3 hardware after every deep-sleep wake: a USB hub agent probed
+// the re-enumerated port with an ESP32 ROM-bootloader SYNC frame (no newline).
+// It was glued to the front of the host's first ETST:ARGS line, which failed
+// its CRC; the device dropped that argument, re-announced READY, and ran the
+// command on the remaining arguments. The host read the second READY as "lost"
+// and resent, and the device ran the same post-wake case twice.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#include <etst/doctest/command_receiver.h>
+
+namespace {
+
+using Receiver = etst::doctest::CommandReceiver<String>;
+using etst::doctest::LineKind;
+using etst::doctest::NakReason;
+
+std::string crc_line(const std::string& content) {
+    char suffix[8];
+    snprintf(suffix, sizeof(suffix), " *%02X",
+             etst::crc8(reinterpret_cast<const uint8_t*>(content.data()), content.size()));
+    return content + suffix;
+}
+
+etst::doctest::LineResult<String> feed(Receiver& r, const std::string& line) {
+    return r.accept(line.data(), line.size());
+}
+
+/// The SYNC frame: C0, 8-byte header, 07 07 12 20 + 32 x 55, C0. Holds NULs.
+std::string hub_probe_frame() {
+    std::string f("\xC0\x00\x08\x24\x00\x00\x00\x00\x00\x07\x07\x12\x20", 13);
+    f += std::string(32, '\x55');
+    f += '\xC0';
+    return f;
+}
+
+}  // namespace
+
+TEST_SUITE("command receiver") {
+
+TEST_CASE("a legacy command and its args are returned together") {
+    Receiver r;
+    CHECK(feed(r, crc_line("ETST:ARGS --env A=1")).kind == LineKind::Args);
+    CHECK(feed(r, crc_line("ETST:ARGS --env B=2")).kind == LineKind::Args);
+    auto res = feed(r, crc_line("RUN: --tc x"));
+    REQUIRE(res.kind == LineKind::Command);
+    CHECK(res.command == "RUN: --tc x");
+    REQUIRE(res.args.size() == 2);
+    CHECK(res.args[0] == "--env A=1");
+    CHECK(res.args[1] == "--env B=2");
+    CHECK(res.id.length() == 0);
+}
+
+TEST_CASE("the probe frame glued to an ETST line is discarded and the line kept") {
+    Receiver r;
+    auto res = feed(r, hub_probe_frame() + crc_line("ETST:ARGS --env BENCH_MAG_UT=250"));
+    CHECK(res.kind == LineKind::Args);
+    CHECK(res.noise_bytes == 46);
+    auto cmd = feed(r, crc_line("RUN"));
+    REQUIRE(cmd.kind == LineKind::Command);
+    REQUIRE(cmd.args.size() == 1);
+    CHECK(cmd.args[0] == "--env BENCH_MAG_UT=250");
+}
+
+TEST_CASE("a line that fails its CRC is refused and clears the args") {
+    Receiver r;
+    feed(r, crc_line("ETST:ARGS --env A=1"));
+    auto bad = feed(r, hub_probe_frame());
+    CHECK(bad.kind == LineKind::Nak);
+    CHECK(bad.reason == NakReason::Crc);
+    auto cmd = feed(r, crc_line("RUN"));
+    REQUIRE(cmd.kind == LineKind::Command);
+    CHECK(cmd.args.empty());
+}
+
+TEST_CASE("a truncated ETST line glued to the next is not salvaged") {
+    // The tail lost was a protocol line's: dropping it silently would lose an
+    // argument. Refuse the line so the host resends.
+    Receiver r;
+    auto res = feed(r, "ETST:ARGS --env A" + crc_line("ETST:ARGS --env B=2"));
+    CHECK(res.kind == LineKind::Nak);
+    CHECK(res.reason == NakReason::Crc);
+}
+
+TEST_CASE("a transaction runs once every announced argument has arrived") {
+    Receiver r;
+    CHECK(feed(r, crc_line("ETST:BEGIN id=a1 args=2")).kind == LineKind::Begin);
+    feed(r, crc_line("ETST:ARGS --env A=1"));
+    feed(r, crc_line("ETST:ARGS --env B=2"));
+    auto res = feed(r, crc_line("ETST:CMD id=a1 RUN: --wake --tc \"x\""));
+    REQUIRE(res.kind == LineKind::Command);
+    CHECK(res.command == "RUN: --wake --tc \"x\"");
+    CHECK(res.id == "a1");
+    CHECK(res.args.size() == 2);
+}
+
+TEST_CASE("a transaction that lost an argument is refused, and its resend runs") {
+    Receiver r;
+    feed(r, crc_line("ETST:BEGIN id=a1 args=2"));
+    feed(r, crc_line("ETST:ARGS --env A=1"));
+    std::string garbled = crc_line("ETST:ARGS --env B=2");
+    garbled[12] = '#';
+    CHECK(feed(r, garbled).kind == LineKind::Nak);
+    auto refused = feed(r, crc_line("ETST:CMD id=a1 RUN"));
+    CHECK(refused.kind == LineKind::Nak);
+    CHECK(refused.reason == NakReason::Incomplete);
+    CHECK(refused.id == "a1");
+
+    feed(r, crc_line("ETST:BEGIN id=a1 args=2"));
+    feed(r, crc_line("ETST:ARGS --env A=1"));
+    feed(r, crc_line("ETST:ARGS --env B=2"));
+    auto res = feed(r, crc_line("ETST:CMD id=a1 RUN"));
+    REQUIRE(res.kind == LineKind::Command);
+    CHECK(res.args.size() == 2);
+}
+
+TEST_CASE("an argument count short of BEGIN's is refused") {
+    Receiver r;
+    feed(r, crc_line("ETST:BEGIN id=a1 args=3"));
+    feed(r, crc_line("ETST:ARGS --env A=1"));
+    auto res = feed(r, crc_line("ETST:CMD id=a1 RUN"));
+    CHECK(res.kind == LineKind::Nak);
+    CHECK(res.reason == NakReason::Incomplete);
+    CHECK(res.got == 1);
+    CHECK(res.want == 3);
+}
+
+TEST_CASE("a transaction already run is acknowledged and not run again") {
+    Receiver r;
+    for (int i = 0; i < 2; ++i) {
+        feed(r, crc_line("ETST:BEGIN id=a1 args=1"));
+        feed(r, crc_line("ETST:ARGS --env A=1"));
+        auto res = feed(r, crc_line("ETST:CMD id=a1 RUN"));
+        CHECK(res.kind == (i == 0 ? LineKind::Command : LineKind::Duplicate));
+        CHECK(res.id == "a1");
+    }
+    feed(r, crc_line("ETST:BEGIN id=b2 args=0"));
+    CHECK(feed(r, crc_line("ETST:CMD id=b2 RUN")).kind == LineKind::Command);
+}
+
+TEST_CASE("a periodic READY clears loose args but not an open transaction's") {
+    Receiver r;
+    feed(r, crc_line("ETST:ARGS --env A=1"));
+    r.on_ready();
+    CHECK(feed(r, crc_line("RUN")).args.empty());
+
+    feed(r, crc_line("ETST:BEGIN id=c3 args=1"));
+    feed(r, crc_line("ETST:ARGS --env A=1"));
+    r.on_ready();
+    auto res = feed(r, crc_line("ETST:CMD id=c3 RUN"));
+    REQUIRE(res.kind == LineKind::Command);
+    CHECK(res.args.size() == 1);
+}
+
+TEST_CASE("malformed transaction lines are refused") {
+    Receiver r;
+    CHECK(feed(r, crc_line("ETST:CMD RUN")).reason == NakReason::Malformed);
+    CHECK(feed(r, crc_line("ETST:BEGIN args=1")).reason == NakReason::Malformed);
+    CHECK(feed(r, crc_line("ETST:BEGIN id=0123456789abcdefX args=1")).reason ==
+          NakReason::Malformed);
+    CHECK(feed(r, crc_line("ETST:CMD id=a1")).reason == NakReason::Malformed);
+}
+
+TEST_CASE("blank input is ignored") {
+    Receiver r;
+    CHECK(feed(r, "").kind == LineKind::Empty);
+    CHECK(feed(r, "  \r").kind == LineKind::Empty);
+}
+
+}  // TEST_SUITE
