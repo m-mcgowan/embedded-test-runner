@@ -5,6 +5,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-10
+
 ### Fixed
 - **A post-wake test case could run twice, the first time without one of its
   arguments.** Seen on ESP32-S3 hardware after every deep-sleep wake: a USB hub

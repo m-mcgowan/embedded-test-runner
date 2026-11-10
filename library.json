@@ -1,6 +1,6 @@
 {
     "name": "embedded-test-runner",
-    "version": "0.3.4",
+    "version": "0.4.0",
     "description": "Test orchestration for embedded devices",
     "keywords": "testing, embedded, serial, crash-detection",
     "frameworks": [
