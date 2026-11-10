@@ -42,6 +42,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
   it acknowledges, resent under the same id until it does, so it is acted on
   once. Works with v0.3.x devices too: they accept a CRC-framed `SLEEP`.
 
+### Changed
+- **The embedded-bridge release gate now counts only the path this project
+  installs.** It blocked on any unreleased bridge commit, including one that
+  touched nothing but the bridge's own CI workflow — demanding a bridge
+  release that the bridge's CHANGELOG had nothing to say about, and could not
+  have produced. The dependency names what it consumes
+  (`#subdirectory=python`), so the gate reads that and counts commits against
+  it; a commit that cannot reach a consumer no longer blocks a release. It
+  still fires on unreleased changes to the installed code.
+
 ### Added
 - **Protocol 2: commands are acknowledged, and a command is never run twice.**
   The device announces `ETST:READY proto=2`. A host that sees it frames each

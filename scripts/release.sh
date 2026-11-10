@@ -318,12 +318,27 @@ check_bridge_released() {
     last_tag="$(git -C "$dir" tag -l 'v*' --sort=-creatordate | head -n1)"
     [[ -n "$last_tag" ]] || return 0
 
+    # Only the part of the bridge we actually install can affect this release.
+    # The dependency names it with #subdirectory=..., so read it from there
+    # rather than assuming: a commit confined to the bridge's CI or docs cannot
+    # reach a pio-test-runner consumer, and blocking on it would demand a
+    # bridge release that its own CHANGELOG has nothing to say about.
+    local subdir
+    subdir="$(sed -n 's|.*embedded-bridge[^"]*#subdirectory=\([A-Za-z0-9_./-]*\).*|\1|p' \
+                "$REPO_DIR/pyproject.toml" 2>/dev/null | head -n1)"
+
     local unreleased
-    unreleased="$(git -C "$dir" rev-list "${last_tag}..origin/main" --count)"
+    if [[ -n "$subdir" ]]; then
+        unreleased="$(git -C "$dir" rev-list "${last_tag}..origin/main" --count -- "$subdir")"
+    else
+        # Could not tell what we consume — count everything, the safe default.
+        unreleased="$(git -C "$dir" rev-list "${last_tag}..origin/main" --count)"
+    fi
     [[ "$unreleased" != "0" ]] || return 0
 
-    die "embedded-bridge: $unreleased commit(s) since $last_tag are unreleased.
-     Release embedded-bridge first:
+    die "embedded-bridge: $unreleased commit(s) since $last_tag touch ${subdir:-the repo} and are unreleased.
+     This repo installs that path, so a tag here would pin bridge code that no
+     bridge release describes. Release embedded-bridge first:
        scripts/release.sh --repo $dir <bridge-version>
      Then release this repo."
 }
