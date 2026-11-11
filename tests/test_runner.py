@@ -466,6 +466,21 @@ class TestOrchestratedProtocol:
 
         assert runner.protocol.current_test_name == "before — after"
 
+    def test_closing_the_connection_drops_a_partial_character(self):
+        """Bytes of a character cut off by a closed connection never reach the next one.
+
+        A device that sleeps or restarts mid-line leaves the first bytes of a
+        character in the decoder; the next connection's output starts afresh.
+        """
+        runner = make_runner()
+        runner._on_serial_data("before —".encode()[:-1])  # the dash's first two bytes
+        runner._close_serial()
+        assert runner._decoder.getstate()[0] == b""  # nothing held over
+
+        runner._on_serial_data((_crc("ETST:READY") + "\n").encode())
+
+        assert runner.protocol.state == ProtocolState.READY
+
     def test_main_loop_catches_done_in_stream(self):
         """The main read loop must detect ETST:DONE mixed with test output.
 

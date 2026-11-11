@@ -14,7 +14,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
   and passed on the device, but its start was dropped and the run ended with
   "1 of N tests never ran". Seen intermittently on ESP32-S3 hardware, wherever
   a read boundary fell. The serial reads now go through an incremental UTF-8
-  decoder that holds a split character until the rest of it arrives.
+  decoder that holds a split character until the rest of it arrives. Closing
+  or reopening the port discards a held partial character and partial line, so
+  nothing cut off by a sleep or restart carries into the next connection.
 
 ## [0.4.0] — 2026-11-10
 

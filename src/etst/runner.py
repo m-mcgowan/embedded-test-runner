@@ -1028,6 +1028,10 @@ class EmbeddedTestRunner(_BaseRunner):
         if self._ser and self._ser.is_open:
             return  # Already connected
 
+        # A new connection starts afresh, also after a drop that never went through _close_serial
+        self._line_buf = ""
+        self._decoder = _utf8_decoder()
+
         from .serial_port import open_serial
 
         port = self._resolve_port()
@@ -1090,13 +1094,19 @@ class EmbeddedTestRunner(_BaseRunner):
                fg="yellow", err=True)
 
     def _close_serial(self):
-        """Close serial connection."""
+        """Close serial connection.
+
+        Also drops any partial line and partial character: a closed port ends the
+        stream, and the next connection's output starts afresh.
+        """
         if self._ser and self._ser.is_open:
             try:
                 self._ser.close()
             except Exception:
                 pass
         self._ser = None
+        self._line_buf = ""
+        self._decoder = _utf8_decoder()
 
     # Pause between the configuration lines sent at READY. The device polls
     # its serial input every ~10 ms, and a USB-CDC receive buffer is typically
