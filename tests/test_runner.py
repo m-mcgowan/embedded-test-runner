@@ -447,6 +447,25 @@ class TestOrchestratedProtocol:
         runner._on_serial_data(done_line[mid:].encode())
         assert runner.protocol.state == ProtocolState.FINISHED  # now complete
 
+    def test_multibyte_character_split_across_reads(self):
+        """A UTF-8 character split across two serial reads keeps its line's CRC valid.
+
+        An em dash is three bytes (E2 80 94). Decoding each read on its own turned
+        the first two bytes and the last into replacement characters, the line's
+        CRC no longer matched, and the case start was dropped as corrupt.
+        """
+        runner = make_runner()
+        runner._line_buf = ""
+        runner._on_serial_data((_crc("ETST:READY") + "\n").encode())
+        runner.protocol.command_sent()
+
+        line = (_crc('ETST:CASE:START suite="S" name="before — after"') + "\n").encode()
+        split = line.index("—".encode()) + 2  # after the dash's second byte
+        runner._on_serial_data(line[:split])
+        runner._on_serial_data(line[split:])
+
+        assert runner.protocol.current_test_name == "before — after"
+
     def test_main_loop_catches_done_in_stream(self):
         """The main read loop must detect ETST:DONE mixed with test output.
 

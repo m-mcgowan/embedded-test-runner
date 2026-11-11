@@ -25,6 +25,7 @@ Usage: create ``test/test_custom_runner.py`` in your PlatformIO project::
 Then set ``test_framework = custom`` in ``platformio.ini``.
 """
 
+import codecs
 import importlib.metadata
 import logging
 import os
@@ -108,6 +109,15 @@ def _secho(msg, **kwargs):
         print(msg)
 
 
+def _utf8_decoder():
+    """A UTF-8 decoder for serial reads that holds back a character split across two reads.
+
+    Decoding each read on its own turns the halves of a multi-byte character into
+    replacement characters, and a protocol line carrying one then fails its CRC.
+    """
+    return codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+
 # Use DoctestTestRunner when available (provides doctest result parsing).
 # Fall back to TestRunnerBase when PIO isn't installed (tests).
 _BaseRunner = DoctestTestRunner if DoctestTestRunner is not None else TestRunnerBase
@@ -181,6 +191,8 @@ class EmbeddedTestRunner(_BaseRunner):
         self._ser = None
         self._port_path = None  # persists across serial open/close for sleep monitoring
         self._line_buf = ""  # partial line buffer for serial reads
+        # Carries a multi-byte UTF-8 character split across two reads into the next one
+        self._decoder = _utf8_decoder()
 
         # Hang detection for line callback mode (PIO owns serial).
         # Tracks the last time we received output to detect silent hangs.
@@ -667,6 +679,7 @@ class EmbeddedTestRunner(_BaseRunner):
         """Run one test cycle: open serial, wait for READY, send command, process."""
         self.protocol.reset()
         self._line_buf = ""
+        self._decoder = _utf8_decoder()
         self._finished_by_runner = False
         # Allow PIO's test suite to accept new results — it may have been
         # marked finished by a previous cycle's doctest summary line.
@@ -850,11 +863,12 @@ class EmbeddedTestRunner(_BaseRunner):
         """Read device output until ``ETST:ACK id=<txn_id>`` or the timeout."""
         deadline = time.monotonic() + timeout_s
         buf = ""
+        decoder = _utf8_decoder()
         while time.monotonic() < deadline:
             data = self._ser.read(self._ser.in_waiting or 1)
             if not data:
                 continue
-            buf += data.decode("utf-8", errors="replace")
+            buf += decoder.decode(data)
             *lines, buf = buf.split("\n")
             for line in lines:
                 parsed = parse_line(line.strip())
@@ -869,7 +883,7 @@ class EmbeddedTestRunner(_BaseRunner):
         Buffers partial lines across reads so protocol markers split across
         two serial reads (e.g. "REA" + "DY\\n") are handled correctly.
         """
-        text = self._line_buf + data.decode("utf-8", errors="replace")
+        text = self._line_buf + self._decoder.decode(data)
         # Split into complete lines, keeping any trailing partial in buffer
         parts = text.split("\n")
         self._line_buf = parts[-1]  # incomplete trailing fragment (or "")
@@ -1043,10 +1057,11 @@ class EmbeddedTestRunner(_BaseRunner):
         try:
             deadline = time.time() + 5
             buf = ""
+            decoder = _utf8_decoder()
             while time.time() < deadline:
                 data = self._ser.read(self._ser.in_waiting or 1)
                 if data:
-                    buf += data.decode("utf-8", errors="replace")
+                    buf += decoder.decode(data)
                     if "Restarting" in buf:
                         _echo("[runner] Device acknowledged RESTART")
                         break

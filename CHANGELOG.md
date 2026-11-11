@@ -5,6 +5,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Fixed
+- **A test case whose name holds a non-ASCII character could be reported as
+  never run.** The host decoded each serial read on its own, so when a read
+  ended inside a multi-byte UTF-8 character (an em dash is three bytes), its
+  halves became replacement characters and the line failed its CRC
+  (`CRC mismatch, ignoring: ETST:CASE:START ... name="a �� b"`). The case ran
+  and passed on the device, but its start was dropped and the run ended with
+  "1 of N tests never ran". Seen intermittently on ESP32-S3 hardware, wherever
+  a read boundary fell. The serial reads now go through an incremental UTF-8
+  decoder that holds a split character until the rest of it arrives.
+
 ## [0.4.0] — 2026-11-10
 
 ### Fixed
