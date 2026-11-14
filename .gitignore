@@ -26,4 +26,7 @@ tests/integration/logs/
 
 # PlatformIO build artifacts
 tests/integration/.pio/
+# Regenerated on every build; records this machine's build time and
+# whether the tree was dirty. pio.lock.json/.ini are the committed inputs.
+tests/integration/build_snapshot.json
 tests/integration/src/idf_component.yml
