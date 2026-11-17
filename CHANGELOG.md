@@ -5,6 +5,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-17
+
 ### Fixed
 - **The device no longer runs every test when it gets a command it does not
   understand.** `apply_runner_command()` ended in "unknown runner command —
