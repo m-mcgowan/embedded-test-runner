@@ -6,6 +6,23 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 ## [Unreleased]
 
 ### Fixed
+- **A test that restarted the device made the whole suite run again, and the
+  rest of the run was lost.** Regression in 0.4.0, on any case that calls
+  `etst::signal_restart()` / `esp_restart()`. A software reset leaves
+  USB-Serial-JTAG enumerated, so the port never drops and the rebooted device
+  is already back in `wait_for_command()`. The runner treated `ETST:RESTART`
+  as the end of the cycle and sent the end-of-run command (`ETST_ON_DONE`,
+  default `WAIT`), which the rebooted device read as a run with no filter and
+  started the suite again from the first case. The resume for the restarted
+  case then went to a busy device and was ignored, and the run ended with most
+  of its tests never run. 0.4.0 is what exposed it: before that release the
+  end-of-run command went out without a CRC and was refused, so it did no
+  harm. A cycle that ends in the device's own `ETST:SLEEP` or `ETST:RESTART`
+  is an intermediate cycle — no `ETST:DONE` is coming and no end-of-run
+  command is sent; the caller resumes the case that slept. Reported and fixed
+  against ESP32-S3 hardware, where a full suite went from 441 of 483 tests
+  never run to completing.
+
 - **A test case whose name holds a non-ASCII character could be reported as
   never run.** The host decoded each serial read on its own, so when a read
   ended inside a multi-byte UTF-8 character (an em dash is three bytes), its

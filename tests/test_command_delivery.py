@@ -210,6 +210,31 @@ class TestEndOfRunCommand:
         assert any(p.startswith("ETST:ACK id=" + cmds[-1].split()[1][3:])
                    for p in device.printed)
 
+    def test_a_cycle_that_ends_in_a_restart_sends_no_end_command(self, monkeypatch):
+        """A test's own restart is not the end of the run.
+
+        Seen on ESP32-S3 hardware: a case called esp_restart(), the runner took
+        ETST:RESTART as the end of the cycle and sent the end-of-run WAIT. The
+        port never dropped, so the rebooted device was already in
+        wait_for_command() and took the WAIT as a run with no filter: it started
+        the suite again from the first case instead of resuming the restarted one.
+        """
+        monkeypatch.delenv("ETST_ON_DONE", raising=False)
+        monkeypatch.delenv("PTR_POST_TEST", raising=False)
+        device = DeviceDouble(proto=2, cases=("t1", "restarts", "t3"))
+        device.restart_in_case = "restarts"
+        runner = _runner_on(device)
+        runner._args_lines = []
+
+        _run_cycle(runner, command="RUN", skip_post_test=False)
+        device.run_until_idle()
+
+        assert device.restarts == 1
+        cmds = [s for s in device.written_strings if s.startswith("ETST:CMD")]
+        assert [c.split(" ", 2)[2].rsplit(" *", 1)[0] for c in cmds] == ["RUN"], cmds
+        assert device.idle_commands == []
+        assert runner.protocol.sleeping_test_name == "restarts"
+
     def test_an_unacknowledged_end_command_is_resent_but_acted_on_once(self, monkeypatch):
         device = DeviceDouble(proto=2)
         monkeypatch.setenv("ETST_ON_DONE", "lightsleep")

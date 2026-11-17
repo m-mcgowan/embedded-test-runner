@@ -63,6 +63,8 @@ class DeviceDouble:
         self._next_ready = 0.0
         self._written: list[bytes] = []
         self._corrupt_next: bytes | None = None
+        self.restart_in_case: str | None = None  # this case calls esp_restart()
+        self.restarts = 0
 
     # ------------------------------------------------------------------
     # Fault injection
@@ -219,6 +221,18 @@ class DeviceDouble:
         self._emit(f"ETST:COUNTS total={len(self.cases)} skip=0 run={len(self.cases)}")
         for name in self.cases:
             self._emit(f'ETST:CASE:START suite="S" name="{name}"')
+            if name == self.restart_in_case:
+                # A software restart: the chip reboots but USB-Serial-JTAG
+                # stays enumerated, so the port never drops. The new boot is
+                # back in wait_for_command(), announcing READY.
+                self.restart_in_case = None
+                self._emit("ETST:RESTART")
+                self.restarts += 1
+                self._args.clear()
+                self._txn = None
+                self._last_id = ""
+                self._ready()
+                return
         self._print("[doctest] test cases: 1 | 1 passed | 0 failed")
         self._emit("ETST:DONE")
         # Back in wait_for_command(): it announces READY first thing.

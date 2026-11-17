@@ -778,6 +778,16 @@ class EmbeddedTestRunner(_BaseRunner):
             if self.crash_detector.triggered:
                 break
 
+        # A cycle that ended in the device's own ETST:SLEEP or ETST:RESTART is
+        # not the end of the run: the caller resumes the case that slept. No
+        # DONE is coming, and no end-of-run command may be sent. After a
+        # software restart the port stays up and the rebooted device is
+        # already waiting for a command, so it would take an end-of-run WAIT
+        # as a run with no filter and start the suite again from the top.
+        if self.protocol.state == ProtocolState.SLEEPING:
+            self._close_serial()
+            return
+
         # If we exited the loop without ETST:DONE (e.g. hang, disconnect,
         # or PIO declared finished via doctest summary), try to drain
         # remaining output to catch ETST:DONE.
