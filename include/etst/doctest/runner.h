@@ -52,6 +52,7 @@
 #include "etst/doctest/resume.h"   // sorted_registry(), select_resume_after()
 #include "etst/doctest/command_args.h"  // combine_command_args()
 #include "etst/doctest/command_kind.h"  // classify_command()
+#include "etst/doctest/filter_flags.h"  // coalesce_repeated_filter_flags()
 #include <Arduino.h>
 #include "etst/doctest/command_receiver.h"  // CommandReceiver: ARGS/BEGIN/CMD, ACK/NAK
 #include "etst/test_runner.h"
@@ -593,6 +594,17 @@ inline void apply_run_filters(::doctest::Context& ctx, const String& body) {
     // Phase 2: pass remaining flags to doctest's native parser.
     if (!args.empty()) {
         auto argv = build_doctest_argv(args);
+
+        // Fold any repeated --ts/--tc/--tse/--tce into one flag each, BEFORE
+        // either the capture below or doctest looks at argv. doctest resolves
+        // an option by scanning backwards and taking the last occurrence, so a
+        // filter that arrived split across several ETST:ARGS lines (which is
+        // how a long one has to arrive, given the 256-byte line limit) would
+        // otherwise lose everything but its final fragment — quietly. The
+        // capture below would still record every fragment, so the count and
+        // the run would describe different sets of tests.
+        coalesce_repeated_filter_flags(argv);
+
         // Capture filter values for count_passing_filters().
         // argv entries are "--flag=value" after build_doctest_argv.
         for (auto& a : argv) {

@@ -83,6 +83,7 @@ static SerialStub Serial;
 // resume.h above. It only needs the String shim, which is defined by now.
 #include <etst/doctest/command_args.h>
 #include <etst/doctest/command_kind.h>
+#include <etst/doctest/filter_flags.h>
 
 // Now include our header (needs String and Serial stubs above)
 // We only include the functions we need, not the full runner
@@ -1016,4 +1017,73 @@ TEST_CASE("LIST is handled without running tests") {
     CHECK(etst::doctest::classify_command(String("LIST"))
           == etst::doctest::CommandKind::List);
     CHECK_FALSE(etst::doctest::command_starts_a_run(String("LIST")));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Repeated filter flags must coalesce before doctest sees them
+//
+// doctest's parseOptionImpl says in its own comment: "going from the end to the
+// beginning and stopping on the first occurrence from the end". A repeated
+// --ts= therefore means LAST ONE WINS, and every earlier one is discarded in
+// silence. That matters because a long filter has to be split across several
+// ETST:ARGS lines to fit the device's 256-byte line limit, and the host folds
+// those back into one command: "RUN: --ts A,B --ts C". Without coalescing, that
+// run would quietly cover C only.
+//
+// Our own FilterState captures EVERY --ts it sees, so the divergence would also
+// make count_passing_filters() disagree with what doctest actually runs — which
+// is what the under-run detection fires on. Coalescing first keeps the count
+// and the run describing the same set.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static std::vector<String> argv_of(std::initializer_list<const char*> items) {
+    std::vector<String> v;
+    for (auto* s : items) v.push_back(String(s));
+    return v;
+}
+static std::string joined(const std::vector<String>& v) {
+    std::string out;
+    for (auto& s : v) { out += s.c_str(); out += "|"; }
+    return out;
+}
+
+TEST_CASE("a repeated --ts coalesces into one flag, keeping every pattern") {
+    auto argv = argv_of({"test", "--ts=A,B", "--ts=C"});
+    etst::doctest::coalesce_repeated_filter_flags(argv);
+    CHECK(joined(argv) == "test|--ts=A,B,C|");
+}
+
+TEST_CASE("a filter split in two round-trips to every pattern it started with") {
+    // The field case: 19 suite patterns, 330 bytes, too long for one line.
+    auto argv = argv_of({"test",
+                         "--ts=*IMU*Subsystem*Factory*,NullIMUSubsystem,BoardDetection*",
+                         "--ts=SleepBasic,SleepDevice,PowerSubsystem"});
+    etst::doctest::coalesce_repeated_filter_flags(argv);
+    REQUIRE(argv.size() == 2);
+    // Count patterns: commas + 1.
+    std::string v(argv[1].c_str());
+    size_t commas = 0;
+    for (char c : v) if (c == ',') commas++;
+    CHECK(commas + 1 == 6);
+    CHECK(v.find("*IMU*Subsystem*Factory*") != std::string::npos);
+    CHECK(v.find("PowerSubsystem") != std::string::npos);
+}
+
+TEST_CASE("long and short forms of the same filter coalesce together") {
+    // doctest routes --ts= and --test-suite= to the same filter slot.
+    auto argv = argv_of({"test", "--ts=A", "--test-suite=B"});
+    etst::doctest::coalesce_repeated_filter_flags(argv);
+    CHECK(joined(argv) == "test|--ts=A,B|");
+}
+
+TEST_CASE("different filters are never merged with each other") {
+    auto argv = argv_of({"test", "--ts=A", "--tc=B", "--tse=C", "--tce=D"});
+    etst::doctest::coalesce_repeated_filter_flags(argv);
+    CHECK(joined(argv) == "test|--ts=A|--tc=B|--tse=C|--tce=D|");
+}
+
+TEST_CASE("a single filter and unrelated flags are left exactly as they were") {
+    auto argv = argv_of({"test", "--ts=A", "--no-skip", "--tc=B"});
+    etst::doctest::coalesce_repeated_filter_flags(argv);
+    CHECK(joined(argv) == "test|--ts=A|--no-skip|--tc=B|");
 }

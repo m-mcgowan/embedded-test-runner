@@ -5,6 +5,31 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Fixed
+- **A filter too long for one protocol line is now split instead of failing
+  the run.** A focus run with 18 suite patterns built a 334-byte
+  `ETST:ARGS --ts ...` line. The device reads at most `MAX_LINE_LEN` (256)
+  bytes and checks a CRC over what it read, so the line did not arrive
+  truncated-but-usable: it failed its CRC, the device answered
+  `ETST:NAK reason=crc`, the host resent the same over-long line five times and
+  the run ended `ERRORED` with zero cases — about seven minutes after the host
+  already knew, since it had detected the over-long line before sending a byte
+  and only printed a warning. Long filters are now split at pattern boundaries
+  across several `ETST:ARGS` lines, and anything still too long to split (a
+  single pattern longer than a line, a non-filter argument) fails immediately
+  and names the offender.
+
+  Splitting is only safe because the device now folds repeated filter flags
+  into one before doctest sees them. doctest resolves an option by scanning
+  argv backwards — `parseOptionImpl`'s own comment says "going from the end to
+  the beginning and stopping on the first occurrence from the end" — so a
+  split filter would otherwise have kept only its last fragment and run a
+  narrower set that looked correct. Worse, `FilterState` captures every flag,
+  so the count and the run would have described different sets of tests and
+  tripped the under-run detection on top of filtering wrongly. Coalescing
+  happens in `include/etst/doctest/filter_flags.h`, before either the capture
+  or doctest looks at argv.
+
 ## [0.4.1] — 2026-11-17
 
 ### Fixed

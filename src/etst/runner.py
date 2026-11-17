@@ -123,6 +123,73 @@ def _utf8_decoder():
 _BaseRunner = DoctestTestRunner if DoctestTestRunner is not None else TestRunnerBase
 
 
+class ArgsLineTooLong(ValueError):
+    """An ETST:ARGS payload does not fit a protocol line and cannot be split."""
+
+
+# Filter flags whose value is a comma-separated pattern list, and so can be
+# split across several ETST:ARGS lines. The device coalesces repeated filter
+# flags (include/etst/doctest/filter_flags.h) before doctest sees them; without
+# that step doctest keeps only the last fragment, so the two changes belong
+# together.
+_SPLITTABLE_FLAGS = (
+    "--ts", "--test-suite",
+    "--tc", "--test-case",
+    "--tse", "--test-suite-exclude",
+    "--tce", "--test-case-exclude",
+)
+
+
+def _framed_args_len(payload):
+    """Bytes the device reads for this payload: framing, CRC and newline."""
+    return len(format_crc(f"ETST:ARGS {payload}")) + 1
+
+
+def split_args_payload(payload, budget):
+    """Split one ETST:ARGS payload into payloads that each fit `budget`.
+
+    The device reads at most MAX_LINE_LEN bytes per line and checks a CRC over
+    what it read, so an over-long line does not arrive truncated-but-usable --
+    it fails its CRC and the command never lands at all. Splitting at pattern
+    boundaries keeps every pattern, because the device folds repeated filter
+    flags back into one before doctest sees them.
+
+    Raises:
+        ArgsLineTooLong: the payload is over budget and has no split point --
+            a non-filter argument, or a single pattern longer than a line.
+            Sending it anyway only buys a CRC failure several minutes later.
+    """
+    if _framed_args_len(payload) <= budget:
+        return [payload]
+
+    flag, _, values = payload.partition(" ")
+    if flag not in _SPLITTABLE_FLAGS or "," not in values:
+        raise ArgsLineTooLong(
+            f"a {len(payload)}-byte argument does not fit the device's "
+            f"{budget}-byte line and cannot be split: {payload[:60]}..."
+        )
+
+    parts = []
+    current = []
+    for pattern in values.split(","):
+        candidate = current + [pattern]
+        if _framed_args_len(f"{flag} {','.join(candidate)}") <= budget:
+            current = candidate
+            continue
+        if not current:
+            # One pattern on its own is already too long; there is nothing
+            # smaller to fall back to.
+            raise ArgsLineTooLong(
+                f"the pattern {pattern[:40]!r} does not fit the device's "
+                f"{budget}-byte line on its own"
+            )
+        parts.append(f"{flag} {','.join(current)}")
+        current = [pattern]
+    if current:
+        parts.append(f"{flag} {','.join(current)}")
+    return parts
+
+
 class EmbeddedTestRunner(_BaseRunner):
     """PlatformIO test runner with crash detection and disconnect handling.
 
@@ -1141,7 +1208,15 @@ class EmbeddedTestRunner(_BaseRunner):
         the command only if all n arguments arrived, acknowledges it by id,
         and does not run an id twice.
         """
-        args = [f"ETST:ARGS {a}" for a in args_lines]
+        # Split before framing: ETST:BEGIN announces how many ARGS lines
+        # follow, so the count has to be of the lines actually sent. A payload
+        # with no split point raises here rather than being sent in hope --
+        # the device would fail its CRC and the run would die five resends and
+        # several minutes later, pointing at a CRC rather than at the filter.
+        expanded = []
+        for payload in args_lines:
+            expanded.extend(split_args_payload(payload, self.DEVICE_RX_BUFFER))
+        args = [f"ETST:ARGS {a}" for a in expanded]
         if txn_id:
             lines = [f"ETST:BEGIN id={txn_id} args={len(args)}", *args,
                      f"ETST:CMD id={txn_id} {command}"]
@@ -1153,10 +1228,13 @@ class EmbeddedTestRunner(_BaseRunner):
             time.sleep(self.LINE_GAP_S)
         for i, line in enumerate(lines):
             if len(format_crc(line)) + 1 > self.DEVICE_RX_BUFFER:
-                _secho(
-                    f"[runner] WARNING: a {len(line)}-byte line may not fit the "
-                    f"device's {self.DEVICE_RX_BUFFER}-byte receive buffer: {line[:60]}...",
-                    fg="yellow", err=True,
+                # Anything still over budget here cannot be split (a command,
+                # or a single pattern longer than a line). Sending it buys a
+                # CRC failure and an ERRORED run minutes from now, so stop.
+                raise ArgsLineTooLong(
+                    f"a {len(line)}-byte line does not fit the device's "
+                    f"{self.DEVICE_RX_BUFFER}-byte receive buffer and cannot "
+                    f"be split: {line[:60]}..."
                 )
             self._send_command(line)
             if i + 1 < len(lines):
