@@ -5,6 +5,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-11-17
+
 ### Added
 - **The integration suite now restarts the device.** Deep sleep drops the
   USB-CDC port; a software reset leaves USB-Serial-JTAG enumerated, so the
