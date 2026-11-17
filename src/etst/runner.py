@@ -190,6 +190,37 @@ def split_args_payload(payload, budget):
     return parts
 
 
+# Splitting a filter is only safe against a device that folds the pieces back
+# together (include/etst/doctest/filter_flags.h). doctest keeps the LAST --ts
+# and discards the rest, so sending a split filter to an older device would run
+# a narrower set and report success -- turning today's loud CRC failure into a
+# silent wrong answer, which is the worse trade. Devices that coalesce announce
+# ETST:READY proto=3.
+PROTO_COALESCES_FILTER_FLAGS = 3
+
+
+def split_args_payload_for_device(payload, budget, device_proto):
+    """Split `payload` if it is over budget AND the device can reassemble it.
+
+    Raises:
+        ArgsLineTooLong: the payload needs splitting but the device is too old
+            to coalesce the pieces, or it cannot be split at all.
+    """
+    if _framed_args_len(payload) <= budget:
+        return [payload]
+
+    if device_proto < PROTO_COALESCES_FILTER_FLAGS:
+        raise ArgsLineTooLong(
+            f"a {len(payload)}-byte argument needs splitting across lines, but "
+            f"the device announced proto={device_proto} and only "
+            f"proto>={PROTO_COALESCES_FILTER_FLAGS} reassembles a split "
+            f"filter. Shorten the filter, or update the device firmware: "
+            f"{payload[:60]}..."
+        )
+
+    return split_args_payload(payload, budget)
+
+
 class EmbeddedTestRunner(_BaseRunner):
     """PlatformIO test runner with crash detection and disconnect handling.
 
@@ -1215,7 +1246,8 @@ class EmbeddedTestRunner(_BaseRunner):
         # several minutes later, pointing at a CRC rather than at the filter.
         expanded = []
         for payload in args_lines:
-            expanded.extend(split_args_payload(payload, self.DEVICE_RX_BUFFER))
+            expanded.extend(split_args_payload_for_device(
+                payload, self.DEVICE_RX_BUFFER, self.protocol.device_proto))
         args = [f"ETST:ARGS {a}" for a in expanded]
         if txn_id:
             lines = [f"ETST:BEGIN id={txn_id} args={len(args)}", *args,

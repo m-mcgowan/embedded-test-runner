@@ -38,11 +38,20 @@ inline void signal_reconnect() {
 
 /// Signal that the device is ready to receive test commands.
 /// The host will respond with RUN_ALL or RUN:<filter>, or with a transaction
-/// (ETST:BEGIN / ETST:ARGS / ETST:CMD) when it speaks protocol 2. `proto=2`
-/// is what tells it that this device acknowledges commands and ignores
-/// duplicates; a host that predates it reads the line as a plain READY.
+/// (ETST:BEGIN / ETST:ARGS / ETST:CMD) when it speaks the transaction
+/// protocol. The number tells the host what this device can do:
+///
+///   - `proto=2` — commands are acknowledged and a duplicate is not re-run.
+///   - `proto=3` — additionally, repeated filter flags are coalesced before
+///     doctest parses them (`doctest/filter_flags.h`), so the host may split
+///     a filter too long for one line across several `ETST:ARGS` lines. A
+///     host must NOT split for a proto=2 device: doctest keeps only the last
+///     fragment, so the run would quietly cover a narrower set.
+///
+/// Every host comparison is `>= 2`, so raising this number leaves older hosts
+/// on the transaction path; one that predates both reads a plain READY.
 inline void signal_ready() {
-    emit(Serial, "ETST:READY proto=2");
+    emit(Serial, "ETST:READY proto=3");
 }
 
 /// Report test counts before execution begins.

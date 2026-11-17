@@ -82,3 +82,42 @@ def test_a_payload_with_no_split_points_fails_immediately():
 def test_one_pattern_longer_than_a_line_fails_rather_than_truncating():
     with pytest.raises(ArgsLineTooLong):
         split_args_payload("--ts " + ("a" * 400) + ",short", BUDGET)
+
+
+class TestSplittingIsGatedOnDeviceSupport:
+    """Never split for a device that cannot put the pieces back together.
+
+    Splitting relies on the device coalescing repeated filter flags. doctest
+    keeps only the LAST ``--ts``, so a device without that step would run a
+    narrower set than asked for and report success — and the host would have
+    turned a loud CRC failure into a silent wrong answer. That is a worse
+    trade, so the host only splits for a device that announces it can cope.
+    """
+
+    def test_a_device_without_coalescing_is_not_sent_a_split_filter(self):
+        from etst.runner import split_args_payload_for_device
+
+        with pytest.raises(ArgsLineTooLong) as excinfo:
+            split_args_payload_for_device(
+                f"--ts {FIELD_SUITES}", BUDGET, device_proto=2
+            )
+        message = str(excinfo.value)
+        assert "proto" in message.lower() or "device" in message.lower(), message
+
+    def test_a_device_with_coalescing_gets_the_split(self):
+        from etst.runner import split_args_payload_for_device
+
+        parts = split_args_payload_for_device(
+            f"--ts {FIELD_SUITES}", BUDGET, device_proto=3
+        )
+        assert len(parts) > 1
+        for payload in parts:
+            assert _framed_len(payload) <= BUDGET
+
+    def test_a_payload_that_fits_is_unaffected_by_device_version(self):
+        from etst.runner import split_args_payload_for_device
+
+        for proto in (1, 2, 3):
+            assert split_args_payload_for_device(
+                "--env A=b", BUDGET, device_proto=proto
+            ) == ["--env A=b"]

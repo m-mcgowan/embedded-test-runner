@@ -40,6 +40,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
   happens in `include/etst/doctest/filter_flags.h`, before either the capture
   or doctest looks at argv.
 
+  **Protocol 3.** A device that coalesces announces `ETST:READY proto=3`, and
+  the host splits a long filter only for such a device. Against `proto=2` it
+  refuses immediately and says why, because splitting for a device that cannot
+  reassemble would trade today's loud CRC failure for a silently narrower run
+  that reports success — the worse of the two. Every host comparison is
+  `>= 2`, so a `proto=3` device still works with older hosts, which keep the
+  transaction path and simply never split.
+
 ## [0.4.1] — 2026-11-17
 
 ### Fixed
