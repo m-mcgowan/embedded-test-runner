@@ -6,6 +6,19 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 ## [Unreleased]
 
 ### Fixed
+- **The device no longer runs every test when it gets a command it does not
+  understand.** `apply_runner_command()` ended in "unknown runner command —
+  using compiled-in filters" and started a full unfiltered run, which is the
+  most destructive available reading of a command the device cannot parse. It
+  is the device half of the restart bug below: the host no longer sends an
+  end-of-run command after a restart, and a device that receives one anyway
+  now goes to its idle loop instead of running the suite. `WAIT`, `SLEEP`,
+  `LIGHTSLEEP` and `RESTART` are recognised as the idle-loop commands they
+  are, and anything unrecognised declines to run. Classification moved to
+  `include/etst/doctest/command_kind.h`, free of Arduino dependencies so the
+  native harness tests the real code. Note for anyone who had been relying on
+  the old behaviour: a garbled command used to start a run and now does not.
+
 - **A test that restarted the device made the whole suite run again, and the
   rest of the run was lost.** Regression in 0.4.0, on any case that calls
   `etst::signal_restart()` / `esp_restart()`. A software reset leaves

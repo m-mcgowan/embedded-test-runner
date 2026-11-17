@@ -82,6 +82,7 @@ static SerialStub Serial;
 // The REAL production arg/command folding, not a copy — same reasoning as
 // resume.h above. It only needs the String shim, which is defined by now.
 #include <etst/doctest/command_args.h>
+#include <etst/doctest/command_kind.h>
 
 // Now include our header (needs String and Serial stubs above)
 // We only include the functions we need, not the full runner
@@ -954,3 +955,65 @@ TEST_CASE("blank input is ignored") {
 }
 
 }  // TEST_SUITE
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Command classification — an unrecognised command must never start a run
+//
+// Regression cover for a field failure on ESP32-S3: a case called esp_restart(),
+// the port never dropped (USB-Serial-JTAG stays enumerated across a software
+// reset), and the host's end-of-run WAIT reached the rebooted device as its
+// FIRST command. apply_runner_command() knew WAIT only as an idle-loop command,
+// fell through to "unknown — using compiled-in filters" and returned
+// should_run=true, so the device ran the entire suite unfiltered instead of
+// idling. The host-side fix stops that command being sent; this is the other
+// half, so a device is not at the mercy of what a host sends it.
+//
+// The classifier is included from the real header rather than mirrored here,
+// for the same reason command_args.h is.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_CASE("idle-loop commands never start a test run") {
+    for (const char* cmd : {"WAIT", "SLEEP", "LIGHTSLEEP", "RESTART"}) {
+        CAPTURE(cmd);
+        CHECK(etst::doctest::classify_command(String(cmd))
+              == etst::doctest::CommandKind::Idle);
+        CHECK_FALSE(etst::doctest::command_starts_a_run(String(cmd)));
+    }
+}
+
+TEST_CASE("an unknown command does not start a test run") {
+    // The whole point: running every test is the most destructive possible
+    // reading of a command we do not understand.
+    for (const char* cmd : {"FLURB", "RUN_EVERYTHING", "ETST:ARGS --tc x", "?"}) {
+        CAPTURE(cmd);
+        CHECK(etst::doctest::classify_command(String(cmd))
+              == etst::doctest::CommandKind::Unknown);
+        CHECK_FALSE(etst::doctest::command_starts_a_run(String(cmd)));
+    }
+}
+
+TEST_CASE("an absent command still runs the compiled-in filters") {
+    // Standalone use: no host attached, the device runs itself. This must keep
+    // working, so "unknown" and "absent" cannot be collapsed into one case.
+    CHECK(etst::doctest::classify_command(String(""))
+          == etst::doctest::CommandKind::Absent);
+    CHECK(etst::doctest::command_starts_a_run(String("")));
+}
+
+TEST_CASE("run commands still start a run") {
+    // "RUN" is here because it had no branch of its own: it reached the run
+    // through the unknown fall-through, so tightening that without naming it
+    // would have stopped every plain run.
+    for (const char* cmd : {"RUN", "RUN_ALL", "RUN: --tc *foo*", "RESUME_AFTER: a test"}) {
+        CAPTURE(cmd);
+        CHECK(etst::doctest::classify_command(String(cmd))
+              == etst::doctest::CommandKind::Run);
+        CHECK(etst::doctest::command_starts_a_run(String(cmd)));
+    }
+}
+
+TEST_CASE("LIST is handled without running tests") {
+    CHECK(etst::doctest::classify_command(String("LIST"))
+          == etst::doctest::CommandKind::List);
+    CHECK_FALSE(etst::doctest::command_starts_a_run(String("LIST")));
+}

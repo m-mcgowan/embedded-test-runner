@@ -51,6 +51,7 @@
 #include <doctest.h>
 #include "etst/doctest/resume.h"   // sorted_registry(), select_resume_after()
 #include "etst/doctest/command_args.h"  // combine_command_args()
+#include "etst/doctest/command_kind.h"  // classify_command()
 #include <Arduino.h>
 #include "etst/doctest/command_receiver.h"  // CommandReceiver: ARGS/BEGIN/CMD, ACK/NAK
 #include "etst/test_runner.h"
@@ -680,9 +681,27 @@ inline RunCommand apply_runner_command(::doctest::Context& ctx, const String& co
         Serial.println("No runner detected (timeout) — using compiled-in filters");
         return {true, 0};
     } else {
-        Serial.printf("Unknown runner command: %s — using compiled-in filters\n",
-                       command.c_str());
-        return {true, 0};
+        // Everything the branches above did not name. Running the whole suite
+        // is the most destructive reading of a command we do not understand,
+        // and it cost a run most of its tests when a rebooted device took the
+        // host's end-of-run WAIT as "run everything". A device should not be
+        // at the mercy of what a host sends it, so an unrecognised command
+        // goes to the idle loop instead.
+        const CommandKind kind = classify_command(command);
+        if (kind == CommandKind::Run) {
+            // Plain "RUN". It never had a branch of its own and reached the
+            // run through this fall-through; it is named in classify_command()
+            // so tightening the rest did not stop every plain run.
+            return {true, 0};
+        }
+        if (kind == CommandKind::Idle) {
+            Serial.printf("Runner: %s belongs to the idle loop — not running tests\n",
+                          command.c_str());
+        } else {
+            Serial.printf("Unknown runner command: %s — not running tests\n",
+                          command.c_str());
+        }
+        return {false, 0};
     }
 }
 
