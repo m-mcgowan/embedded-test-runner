@@ -5,6 +5,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/) conventions.
 
 ## [Unreleased]
 
+### Added
+- **The integration suite now restarts the device.** Deep sleep drops the
+  USB-CDC port; a software reset leaves USB-Serial-JTAG enumerated, so the
+  port never disappears and the rebooted device is already waiting for a
+  command. Only the second shape could produce the 0.4.0 end-of-run-command
+  regression, and nothing here restarted, so this project had to borrow a
+  downstream firmware suite to reproduce its own bug. `test_z_restart.cpp`
+  covers it, with a case after the restart that fails loudly if the resume
+  goes wrong.
+
 ### Fixed
 - **A filter too long for one protocol line is now split instead of failing
   the run.** A focus run with 18 suite patterns built a 334-byte
